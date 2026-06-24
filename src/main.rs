@@ -2,7 +2,6 @@ mod cli;
 mod daemon;
 
 use clap::Parser;
-use std::collections::HashMap;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tracker::daemon::tracker::TrackerState;
@@ -19,32 +18,35 @@ async fn main() -> anyhow::Result<()> {
             daemon::run().await.expect("daemon failed to run");
         }
         KeyPressStatus::Status => {
-            println!("status called");
             ensure_daemon_running().await.expect("daemon failed to run");
             let socket_path = get_socket().await.expect("failed to get socket");
             let mut stream = UnixStream::connect(socket_path.as_path())
                 .await
                 .expect("failed to connect to socket");
+
             let mut len_buf = [0u8; 4];
             stream
                 .read_exact(&mut len_buf)
                 .await
                 .expect("failed to read length prefix");
+
             let len = u32::from_le_bytes(len_buf) as usize;
             let mut data_buf = vec![0u8; len];
             stream
                 .read_exact(&mut data_buf)
                 .await
                 .expect("failed to read data");
-            let tracker_state_date: HashMap<u8, HashMap<u16, u32>> =
-                serde_json::from_slice(&data_buf).expect("decoding to hashmap failed");
-            let tracker_state = TrackerState {
-                count_freq: tracker_state_date,
-            };
+
+            let tracker_state: TrackerState =
+                serde_json::from_slice(&data_buf).expect("decoding to tracker_state failed");
             tracker_state.display();
         }
-        KeyPressStatus::Push => {}
+        KeyPressStatus::Init => {
             println!("Push");
+        }
+        KeyPressStatus::Push => {
+            println!("Push");
+        }
         _ => {
             println!("not implemented yet")
         } // KeyPressStatus::Status => {}

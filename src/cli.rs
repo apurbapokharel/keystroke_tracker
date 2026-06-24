@@ -16,6 +16,8 @@ pub enum KeyPressStatus {
     /// Get current keypress status
     Status,
 
+    /// Init git repo that stores the keystrokes.
+    Init,
     /// Push the current session
     Push,
 

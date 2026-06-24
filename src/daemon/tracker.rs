@@ -3,13 +3,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+pub const CURRENT_VERSION: u8 = 1;
+
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct Tracker {
     pub data: Mutex<TrackerState>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct TrackerState {
+    /// adding a version for backward compatibility and autoschema parrsing on the frontend
+    pub version: u8,
     /// 0 is 12 am .... 24 is 11pm
     /// u16 is key_type.code(),
     /// u32 is times pressed
@@ -26,11 +30,13 @@ impl Tracker {
 impl TrackerState {
     fn new() -> TrackerState {
         TrackerState {
+            version: CURRENT_VERSION,
             count_freq: HashMap::new(),
         }
     }
 
     pub fn display(&self) {
+        println!("Version {}", self.version);
         for (k, v) in &self.count_freq {
             println!("For hour {}", k);
             for (k2, v2) in v {

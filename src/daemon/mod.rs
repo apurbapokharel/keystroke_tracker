@@ -55,7 +55,6 @@ pub async fn run() -> anyhow::Result<()> {
     let device_path = read_env_key().expect("error reading .env");
     println!("Using device: {}", device_path);
     let mut device = Device::open(device_path)?;
-    // let count = Arc::new(Mutex::new(0));
     let tracker: Arc<Tracker> = Arc::new(Tracker::new());
     let tracker_write = Arc::clone(&tracker);
     tokio::task::spawn_blocking(move || {
@@ -95,7 +94,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 3. also handle new connections to this socket.
     loop {
-        println!("accept request");
         let (mut stream, _addr) = unix_stream
             .accept()
             .await
@@ -105,18 +103,17 @@ pub async fn run() -> anyhow::Result<()> {
             .data
             .lock()
             .expect("unable to get mutex lock")
-            .count_freq
             .clone();
         tokio::spawn(async move {
-            let serialized_map =
+            let serialized =
                 serde_json::to_string(&tracker_state).expect("unable to serialize tracker_state");
-            let len = (serialized_map.len() as u32).to_le_bytes();
+            let len = (serialized.len() as u32).to_le_bytes();
             stream
                 .write_all(&len)
                 .await
                 .expect("failed to write length prefix");
             stream
-                .write_all(serialized_map.as_bytes())
+                .write_all(serialized.as_bytes())
                 .await
                 .expect("failed to write into stream");
         });
