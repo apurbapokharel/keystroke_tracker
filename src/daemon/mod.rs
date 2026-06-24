@@ -1,9 +1,15 @@
+pub mod tracker;
+
 use anyhow::Context;
+use chrono::Timelike;
+use chrono::prelude::*;
 use evdev::{Device, EventSummary};
-use std::sync::{Arc, Mutex};
-use std::{os::unix, path::PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
+
+use crate::daemon::tracker::Tracker;
 
 const SOCKET_NAME: &str = "tracker.sock";
 
@@ -49,39 +55,71 @@ pub async fn run() -> anyhow::Result<()> {
     let device_path = read_env_key().expect("error reading .env");
     println!("Using device: {}", device_path);
     let mut device = Device::open(device_path)?;
-    let count = Arc::new(Mutex::new(0));
+    // let count = Arc::new(Mutex::new(0));
+    let tracker: Arc<Tracker> = Arc::new(Tracker::new());
+    let tracker_write = Arc::clone(&tracker);
     tokio::task::spawn_blocking(move || {
         loop {
             for event in device.fetch_events().unwrap() {
                 if let EventSummary::Key(_ev, key_type, 1) = event.destructure() {
-                    let mut count = count.lock().expect("unable to get mutex lock");
-                    *count += 1;
-                    println!("Key {:?} was pressed {:?}", key_type, count);
+                    let hour_indicator = Local::now().hour() as u8;
+                    let key_code = key_type.code();
+
+                    let mut tracker_state = tracker_write
+                        .data
+                        .lock()
+                        .expect("unable to get tracker_state mutex lock");
+
+                    tracker_state
+                        .count_freq
+                        .entry(hour_indicator)
+                        .or_default()
+                        .entry(key_code)
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1);
+
+                    // println!(
+                    //     "Key {:?}, keycode {:?} was pressed {:?}",
+                    //     key_type,
+                    //     key_type.code(),
+                    //     tracker_state
+                    //         .count_freq
+                    //         .get(&hour_indicator)
+                    //         .and_then(|inner| inner.get(&key_code))
+                    //         .unwrap_or(&0)
+                    // );
                 }
             }
         }
     });
 
     // 3. also handle new connections to this socket.
-    println!("outside");
     loop {
         println!("accept request");
         let (mut stream, _addr) = unix_stream
             .accept()
             .await
             .expect("unable to fetch incoming request");
-        // let count = Arc::clone(&count);
+        let tracker_read = Arc::clone(&tracker);
+        let tracker_state = tracker_read
+            .data
+            .lock()
+            .expect("unable to get mutex lock")
+            .count_freq
+            .clone();
         tokio::spawn(async move {
-            // process(stream).await;
+            let serialized_map =
+                serde_json::to_string(&tracker_state).expect("unable to serialize tracker_state");
+            let len = (serialized_map.len() as u32).to_le_bytes();
             stream
-                .write_all(b"hello")
+                .write_all(&len)
                 .await
-                .expect("failed to write into steam");
+                .expect("failed to write length prefix");
+            stream
+                .write_all(serialized_map.as_bytes())
+                .await
+                .expect("failed to write into stream");
         });
     }
     // Ok(())
 }
-
-// async fn process(stream: UnixStream) {
-//     println!("inside process")
-// }
