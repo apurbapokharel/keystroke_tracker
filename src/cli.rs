@@ -18,6 +18,7 @@ pub enum KeyPressStatus {
 
     /// Init git repo that stores the keystrokes.
     Init,
+
     /// Push the current session
     Push,
 
@@ -25,5 +26,5 @@ pub enum KeyPressStatus {
     Pull,
 
     /// Generate daily report
-    Sync,
+    Report,
 }

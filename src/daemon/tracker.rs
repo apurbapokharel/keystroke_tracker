@@ -27,6 +27,7 @@ impl Tracker {
         }
     }
 }
+
 impl TrackerState {
     fn new() -> TrackerState {
         TrackerState {

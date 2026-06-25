@@ -83,7 +83,6 @@ hour,personal,work,grand_total
 ## Permissions
 - User must be in the `input` group to read `/dev/input/event*`
 - Run once: `sudo usermod -aG input $USER && logout & log back in`
-- Alternative: run the daemon as root (not recommended)
 
 ## Privacy
 - Only counts of key presses are stored; **no raw key sequences, no timing between keys, no typed text**
