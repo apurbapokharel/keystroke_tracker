@@ -12,7 +12,7 @@ use tokio::net::UnixListener;
 use crate::daemon::tracker::Tracker;
 
 const SOCKET_NAME: &str = "tracker.sock";
-const KEYBAORD_DEVICE: &str = "KEYBAORD_DEVICE=";
+const KEYBOARD_DEVICE: &str = "KEYBOARD_DEVICE=";
 
 pub fn read_env_key(key: &str) -> anyhow::Result<String> {
     let content = std::fs::read_to_string(".env").expect(".env does not exist");
@@ -51,7 +51,7 @@ pub async fn run() -> anyhow::Result<()> {
     let unix_stream = connect_to_socket().expect("failed to connect to unix socket");
 
     // 2. run an endless loop that processes the keys pressed.
-    let device_path = read_env_key(KEYBAORD_DEVICE).expect("error reading .env");
+    let device_path = read_env_key(KEYBOARD_DEVICE).expect("error reading .env");
     println!("Using device: {}", device_path);
     let mut device = Device::open(device_path)?;
     let tracker: Arc<Tracker> = Arc::new(Tracker::new());

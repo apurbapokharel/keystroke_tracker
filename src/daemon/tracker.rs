@@ -38,12 +38,25 @@ impl TrackerState {
 
     pub fn display(&self) {
         println!("Version {}", self.version);
+        let mut total: u32 = 0;
         for (k, v) in &self.count_freq {
             println!("For hour {}", k);
             for (k2, v2) in v {
-                println!("Key {:?}, Pressed {} times", KeyCode::new(*k2), v2)
+                println!("Key {:?}, Pressed {} times", KeyCode::new(*k2), v2);
+                total += v2;
             }
         }
+        println!("Total presses {}", total)
+    }
+
+    pub fn add_jsons(&self, state: &TrackerState) -> anyhow::Result<()> {
+        print!("add jsons and export json");
+        Ok(())
+    }
+
+    pub fn export_to_json(&self) -> anyhow::Result<()> {
+        print!("export_to_json");
+        Ok(())
     }
 }
 
