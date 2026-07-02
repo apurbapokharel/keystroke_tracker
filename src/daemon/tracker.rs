@@ -38,6 +38,10 @@ impl TrackerState {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.count_freq = HashMap::new()
+    }
+
     pub fn display(&self) {
         println!("Version {}", self.version);
         let mut total: u32 = 0;

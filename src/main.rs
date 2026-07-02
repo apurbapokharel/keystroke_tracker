@@ -1,12 +1,14 @@
 mod cli;
 mod daemon;
-
+mod ipc;
 use crate::daemon::tracker::TrackerState;
+use anyhow::{Ok, bail};
 use chrono::Local;
 use clap::Parser;
+use ipc::IPCCommand;
 use std::process::Command;
 use std::{fs, path::Path};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use cli::{Args, KeyPressStatus};
@@ -97,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
             // let hour_indicator = Local::now().hour() as u8;
 
             //2. always pull before pushing
-            pull_repo(&git_dir).expect("pull before push failed");
+            // pull_repo(&git_dir).expect("pull before push failed");
 
             //3. get Status
             let tracker_state = get_status().await.expect("get_status failed");
@@ -125,51 +127,81 @@ async fn main() -> anyhow::Result<()> {
             }
 
             //5. push
-            let commit_name = Local::now().to_string();
-            let msg = format!("push keystrokes from {}", commit_name);
-
-            Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(&git_dir)
-                .status()?;
-
-            Command::new("git")
-                .args(["commit", "-m", &msg])
-                .current_dir(&git_dir)
-                .status()?;
-
-            Command::new("git")
-                .args(["push", "-u", "origin", "main"])
-                .current_dir(&git_dir)
-                .status()
-                .expect("gir push failed");
-
+            // let commit_name = Local::now().to_string();
+            // let msg = format!("push keystrokes from {}", commit_name);
+            //
+            // Command::new("git")
+            //     .args(["add", "-A"])
+            //     .current_dir(&git_dir)
+            //     .status()?;
+            //
+            // Command::new("git")
+            //     .args(["commit", "-m", &msg])
+            //     .current_dir(&git_dir)
+            //     .status()?;
+            //
+            // Command::new("git")
+            //     .args(["push", "-u", "origin", "main"])
+            //     .current_dir(&git_dir)
+            //     .status()
+            //     .expect("gir push failed");
+            //
             //6. reset TrackerState after successfull push
+            reset_tracker().await.expect("unable to reset tracker");
         }
         _ => {
-            println!("not implemented yet")
+            bail!("This command is not supported {:?}", parsed_command.get)
         }
     }
+    Ok(())
+}
 
+async fn reset_tracker() -> anyhow::Result<()> {
+    ensure_daemon_running().await.expect("daemon failed to run");
+    let socket_path = get_socket().expect("failed to get socket");
+    let stream = UnixStream::connect(socket_path.as_path())
+        .await
+        .expect("failed to connect to socket");
+    let (_reader, mut writer) = stream.into_split();
+    let command = IPCCommand {
+        action: "Reset".to_string(),
+    };
+    let serialized_command =
+        serde_json::to_string(&command).expect("failed to convert struct IPCCommand into string");
+    let _size = writer
+        .write(serialized_command.as_bytes())
+        .await
+        .expect("failed to write");
     Ok(())
 }
 
 async fn get_status() -> anyhow::Result<TrackerState> {
     ensure_daemon_running().await.expect("daemon failed to run");
     let socket_path = get_socket().expect("failed to get socket");
-    let mut stream = UnixStream::connect(socket_path.as_path())
+    let stream = UnixStream::connect(socket_path.as_path())
         .await
         .expect("failed to connect to socket");
-
+    let (mut reader, mut writer) = stream.into_split();
+    // request the status
+    let command = IPCCommand {
+        action: "Read".to_string(),
+    };
+    let serialized_command =
+        serde_json::to_string(&command).expect("failed to convert struct IPCCommand into string");
+    let _size = writer
+        .write(serialized_command.as_bytes())
+        .await
+        .expect("failed to write");
+    // get the status
     let mut len_buf = [0u8; 4];
-    stream
+    reader
         .read_exact(&mut len_buf)
         .await
         .expect("failed to read length prefix");
 
     let len = u32::from_le_bytes(len_buf) as usize;
     let mut data_buf = vec![0u8; len];
-    stream
+    reader
         .read_exact(&mut data_buf)
         .await
         .expect("failed to read data");
