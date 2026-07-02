@@ -1,6 +1,8 @@
 use evdev::KeyCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub const CURRENT_VERSION: u8 = 1;
@@ -49,13 +51,26 @@ impl TrackerState {
         println!("Total presses {}", total)
     }
 
-    pub fn add_jsons(&self, state: &TrackerState) -> anyhow::Result<()> {
-        print!("add jsons and export json");
+    pub fn add_jsons(&mut self, current_state: &TrackerState) -> anyhow::Result<()> {
+        for (hour, inner_map) in &current_state.count_freq {
+            let entry = self.count_freq.entry(*hour).or_insert_with(HashMap::new);
+            for (key, count) in inner_map {
+                *entry.entry(*key).or_insert(0) += count;
+            }
+        }
         Ok(())
     }
 
-    pub fn export_to_json(&self) -> anyhow::Result<()> {
-        print!("export_to_json");
+    pub fn export_to_json(&self, path: &PathBuf, create_dir: bool) -> anyhow::Result<()> {
+        if create_dir {
+            // create the directories
+            std::fs::create_dir_all(path).expect("failed to create directories");
+        }
+        // serizlize tracker_state to string
+        let serialized = serde_json::to_string(self).expect("unable to serialize tracker_state");
+        // save the serialized string to .json
+        fs::write(path.join("keystrokes.json"), serialized)
+            .expect("failed to write tracker_state into keystores.json");
         Ok(())
     }
 }

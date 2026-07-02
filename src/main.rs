@@ -3,12 +3,9 @@ mod daemon;
 
 use crate::daemon::tracker::TrackerState;
 use chrono::Local;
-use chrono::Timelike;
-use chrono::format::DelayedFormat;
-use chrono::prelude::*;
 use clap::Parser;
 use std::process::Command;
-use std::{env, fs, path::Path};
+use std::{fs, path::Path};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 
@@ -89,27 +86,65 @@ async fn main() -> anyhow::Result<()> {
             let home_dir = dirs::home_dir().expect("failed to get home dir");
             let git_dir_str = read_env_key(GIT_DIR).expect("unable to read GIT_DIR=");
             let git_dir = home_dir.join(&git_dir_str);
-            let git_dir_data = git_dir.join("data").join("date");
 
             let date = Local::now().format("%Y-%m-%d").to_string();
-            let user = env::var("USER").unwrap();
+            // let user = env::var("USER").unwrap();
             let model = fs::read_to_string("/sys/devices/virtual/dmi/id/product_name")
-                .unwrap_or_else(|_| "Unknown".to_string());
-            let hour_indicator = Local::now().hour() as u8;
+                .unwrap_or_else(|_| "Unknown".to_string())
+                .trim()
+                .replace(' ', "_");
+            let git_dir_model = git_dir.join("data").join(date).join(model);
+            // let hour_indicator = Local::now().hour() as u8;
 
             //2. always pull before pushing
-            // pull_repo(&git_dir).expect("pull before push failed");
+            pull_repo(&git_dir).expect("pull before push failed");
+
             //3. get Status
-            // let tracker_state = get_status().await.expect("get_status failed");
+            let tracker_state = get_status().await.expect("get_status failed");
+
             //4. read the current json inside git_dir
             //4.1 if no json then export to json
-            // tracker_state.export_to_json().expect("export to json failed");
-            // 4.2 else add the state to json and export new added json (which is also export_to_json with
-            //   same file name)
-            // if !git_dir.join('')
-            //5. add to appropriate folder structure
-            //6. push
-            //7. reset TrackerState after successfull push
+            if !git_dir_model.join("keystrokes.json").exists() {
+                tracker_state
+                    .export_to_json(&git_dir_model, true)
+                    .expect("export to json failed");
+            }
+            // 4.2 else add the state to json and export new added json (which is also export_to_json with same file name)
+            else {
+                let stored_state_string = fs::read_to_string(git_dir_model.join("keystrokes.json"))
+                    .expect("failed to read keystrokes.json to string");
+                let mut stored_tracker_state: TrackerState =
+                    serde_json::from_str(&stored_state_string)
+                        .expect("failed to create TrackerState struct from string");
+                stored_tracker_state
+                    .add_jsons(&tracker_state)
+                    .expect("failed to update current TrackerState");
+                stored_tracker_state
+                    .export_to_json(&git_dir_model, false)
+                    .expect("export to json failed");
+            }
+
+            //5. push
+            let commit_name = Local::now().to_string();
+            let msg = format!("push keystrokes from {}", commit_name);
+
+            Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(&git_dir)
+                .status()?;
+
+            Command::new("git")
+                .args(["commit", "-m", &msg])
+                .current_dir(&git_dir)
+                .status()?;
+
+            Command::new("git")
+                .args(["push", "-u", "origin", "main"])
+                .current_dir(&git_dir)
+                .status()
+                .expect("gir push failed");
+
+            //6. reset TrackerState after successfull push
         }
         _ => {
             println!("not implemented yet")
