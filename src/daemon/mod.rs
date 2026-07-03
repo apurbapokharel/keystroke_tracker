@@ -5,15 +5,12 @@ use anyhow::bail;
 use chrono::Timelike;
 use chrono::prelude::*;
 use evdev::{Device, EventSummary};
-use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::fs::read;
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::daemon::tracker::Tracker;
-use crate::daemon::tracker::TrackerState;
 use crate::ipc::IPCCommand;
 
 const SOCKET_NAME: &str = "tracker.sock";
@@ -30,7 +27,7 @@ pub fn read_env_key(key: &str) -> anyhow::Result<String> {
             }
         }
     }
-    Err(anyhow::anyhow!("KEYBOARD_DEVICE not found in .env"))
+    Err(anyhow::anyhow!(format!("{} not found", key)))
 }
 
 pub fn get_socket() -> anyhow::Result<PathBuf> {
@@ -98,18 +95,13 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 3. also handle new connections to this socket.
     loop {
-        let (mut stream, _addr) = unix_stream
+        let (stream, _addr) = unix_stream
             .accept()
             .await
             .expect("unable to fetch incoming request");
         let tracker_read = Arc::clone(&tracker);
-        let tracker_state = tracker_read
-            .data
-            .lock()
-            .expect("unable to get mutex lock")
-            .clone();
         tokio::spawn(async move {
-            handle_request(tracker_state, stream)
+            handle_request(tracker_read, stream)
                 .await
                 .expect("failed to handle incoming requests");
         });
@@ -117,7 +109,7 @@ pub async fn run() -> anyhow::Result<()> {
     // Ok(())
 }
 
-async fn handle_request(mut tracker_state: TrackerState, stream: UnixStream) -> anyhow::Result<()> {
+async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
     let mut buf: Vec<u8> = vec![0u8; 1024];
     let n = reader
@@ -128,8 +120,12 @@ async fn handle_request(mut tracker_state: TrackerState, stream: UnixStream) -> 
     let command: IPCCommand =
         serde_json::from_str(&buf_to_string).expect("failed to convert to struct IPCCommand");
     if command.action.as_str() == "Read" {
-        let serialized =
-            serde_json::to_string(&tracker_state).expect("unable to serialize tracker_state");
+        let state = tracker
+            .data
+            .lock()
+            .expect("unable to get mutex lock")
+            .clone();
+        let serialized = serde_json::to_string(&state).expect("unable to serialize tracker_state");
         let len = (serialized.len() as u32).to_le_bytes();
         writer
             .write_all(&len)
@@ -140,9 +136,11 @@ async fn handle_request(mut tracker_state: TrackerState, stream: UnixStream) -> 
             .await
             .expect("failed to write into stream");
     } else if command.action.as_str() == "Reset" {
-        tracker_state.reset();
-        println!("tracker_reset");
-        tracker_state.display();
+        tracker
+            .data
+            .lock()
+            .expect("unable to get mutex lock")
+            .reset();
     } else {
         bail!("Unknown command {:?}", command.action.as_str())
     }

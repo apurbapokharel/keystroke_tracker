@@ -4,15 +4,6 @@
   and the git origin command.
 3. init operation will be done if the repo does not contain a .git and if the .git corresponds to a different name than the github repo
  (dont know if this can be done)
-4. pull:
-  1. pull from local github repo, no stashing supported, since state is handled by daemon current state unaffected by pull.
-5. push:
-  1. always pull before pushing.
-  2. c8 folder structure if not present using devicename/$user name and the current date.
-  3. get the current state.
-  4. add current state with exisiting stats in repo if present. 
-  5. push
-  6. upon successfull push reset the daemon state.
 6. Report
   1. a service that autoruns once a day and uses the data from the day before to generate report.
   2. the generated report can then be displayed somewhere.
@@ -26,4 +17,4 @@
   6. run tracker init to initialize the github repo (this runs only once)
   7. check if git cli is configured and user.name and user.email exists else ask the user to rerun after setting up git.
  
-  
+8. hourly csv  

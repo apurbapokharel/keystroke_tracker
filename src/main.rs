@@ -96,10 +96,9 @@ async fn main() -> anyhow::Result<()> {
                 .trim()
                 .replace(' ', "_");
             let git_dir_model = git_dir.join("data").join(date).join(model);
-            // let hour_indicator = Local::now().hour() as u8;
 
             //2. always pull before pushing
-            // pull_repo(&git_dir).expect("pull before push failed");
+            pull_repo(&git_dir).expect("pull before push failed");
 
             //3. get Status
             let tracker_state = get_status().await.expect("get_status failed");
@@ -127,25 +126,25 @@ async fn main() -> anyhow::Result<()> {
             }
 
             //5. push
-            // let commit_name = Local::now().to_string();
-            // let msg = format!("push keystrokes from {}", commit_name);
-            //
-            // Command::new("git")
-            //     .args(["add", "-A"])
-            //     .current_dir(&git_dir)
-            //     .status()?;
-            //
-            // Command::new("git")
-            //     .args(["commit", "-m", &msg])
-            //     .current_dir(&git_dir)
-            //     .status()?;
-            //
-            // Command::new("git")
-            //     .args(["push", "-u", "origin", "main"])
-            //     .current_dir(&git_dir)
-            //     .status()
-            //     .expect("gir push failed");
-            //
+            let commit_name = Local::now().to_string();
+            let msg = format!("push keystrokes from {}", commit_name);
+
+            Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(&git_dir)
+                .status()?;
+
+            Command::new("git")
+                .args(["commit", "-m", &msg])
+                .current_dir(&git_dir)
+                .status()?;
+
+            Command::new("git")
+                .args(["push", "-u", "origin", "main"])
+                .current_dir(&git_dir)
+                .status()
+                .expect("gir push failed");
+
             //6. reset TrackerState after successfull push
             reset_tracker().await.expect("unable to reset tracker");
         }
@@ -252,7 +251,7 @@ fn pull_repo(git_dir: &Path) -> anyhow::Result<()> {
 }
 
 async fn ensure_daemon_running() -> anyhow::Result<()> {
-    //TODO: need to ping to check the connection. This is just a placeholder
+    //TODO: can ping to check the connection. I am not doing that, do not feel it's needed.
     let socket_path = get_socket().expect("failed to get socket");
     if !socket_path.exists() {
         anyhow::bail!("Socket does not exist. Ensure program is run correctly")
