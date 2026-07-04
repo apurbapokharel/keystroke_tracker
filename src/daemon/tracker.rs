@@ -1,4 +1,3 @@
-use evdev::KeyCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -17,9 +16,9 @@ pub struct TrackerState {
     /// adding a version for backward compatibility and autoschema parrsing on the frontend
     pub version: u8,
     /// 0 is 12 am .... 24 is 11pm
-    /// u16 is key_type.code(),
+    /// String is the evdev key name (e.g. "KEY_A", "KEY_SPACE"),
     /// u32 is times pressed
-    pub count_freq: HashMap<u8, HashMap<u16, u32>>,
+    pub count_freq: HashMap<u8, HashMap<String, u32>>,
 }
 
 impl Tracker {
@@ -48,7 +47,7 @@ impl TrackerState {
         for (k, v) in &self.count_freq {
             println!("For hour {}", k);
             for (k2, v2) in v {
-                println!("Key {:?}, Pressed {} times", KeyCode::new(*k2), v2);
+                println!("Key {}, Pressed {} times", k2, v2);
                 total += v2;
             }
         }
@@ -59,7 +58,7 @@ impl TrackerState {
         for (hour, inner_map) in &current_state.count_freq {
             let entry = self.count_freq.entry(*hour).or_insert_with(HashMap::new);
             for (key, count) in inner_map {
-                *entry.entry(*key).or_insert(0) += count;
+                *entry.entry(key.clone()).or_insert(0) += count;
             }
         }
         Ok(())
@@ -88,7 +87,7 @@ mod tests {
         let mut state = TrackerState::default();
 
         state.count_freq.insert(10, HashMap::new());
-        state.count_freq.get_mut(&10).unwrap().insert(65, 3);
+        state.count_freq.get_mut(&10).unwrap().insert("KEY_A".to_string(), 3);
 
         for (k, v) in &state.count_freq {
             for (k2, v2) in v {

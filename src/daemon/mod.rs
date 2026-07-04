@@ -4,7 +4,7 @@ use anyhow::Context;
 use anyhow::bail;
 use chrono::Timelike;
 use chrono::prelude::*;
-use evdev::{Device, EventSummary};
+use evdev::{Device, EventSummary, KeyCode};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -72,7 +72,7 @@ pub async fn run() -> anyhow::Result<()> {
             for event in device.fetch_events().unwrap() {
                 if let EventSummary::Key(_ev, key_type, 1) = event.destructure() {
                     let hour_indicator = Local::now().hour() as u8;
-                    let key_code = key_type.code();
+                    let key_code = format!("{:?}", KeyCode::new(key_type.code()));
 
                     let mut tracker_state = tracker_write
                         .data
