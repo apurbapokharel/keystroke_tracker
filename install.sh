@@ -9,6 +9,11 @@ BIN_PATH="$BIN_DIR/tracker"
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_PATH="$SERVICE_DIR/tracker.service"
 
+FORCE=0
+for arg in "$@"; do
+    [ "$arg" = "--force" ] && FORCE=1
+done
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -69,7 +74,28 @@ fi
 info "All prerequisites found."
 
 # ------------------------------------------------------------------
-# 3. Keyboard setup
+# 3. Check if already running
+# ------------------------------------------------------------------
+if systemctl --user is-active --quiet tracker.service 2>/dev/null; then
+    if [ "$FORCE" -ne 1 ]; then
+        error "tracker.service is already configured and running."
+        echo ""
+        echo "  To reinstall, stop and disable first:"
+        echo "    systemctl --user stop tracker.service"
+        echo "    systemctl --user disable tracker.service"
+        echo ""
+        echo "  Or re-run with --force to stop and reinstall:"
+        echo "    ./install.sh --force"
+        exit 1
+    else
+        warn "Stopping existing tracker.service..."
+        systemctl --user stop tracker.service
+        systemctl --user disable tracker.service
+    fi
+fi
+
+# ------------------------------------------------------------------
+# 4. Keyboard setup
 # ------------------------------------------------------------------
 info "Running keyboard setup..."
 if [ ! -f "$PROJECT_DIR/scripts/setup-keyboard.sh" ]; then
@@ -79,7 +105,7 @@ fi
 bash "$PROJECT_DIR/scripts/setup-keyboard.sh"
 
 # ------------------------------------------------------------------
-# 4. Configure .env
+# 5. Configure .env
 # ------------------------------------------------------------------
 info "Configuring .env..."
 
@@ -119,13 +145,13 @@ while IFS= read -r line; do
 done < "$ENV_FILE"
 
 # ------------------------------------------------------------------
-# 5. Build
+# 6. Build
 # ------------------------------------------------------------------
 info "Building tracker (cargo build --release)..."
 cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
 
 # ------------------------------------------------------------------
-# 6. Install binary
+# 7. Install binary
 # ------------------------------------------------------------------
 info "Installing binary to $BIN_PATH..."
 mkdir -p "$BIN_DIR"
@@ -138,7 +164,7 @@ if ! echo "$PATH" | grep -qF "$BIN_DIR"; then
 fi
 
 # ------------------------------------------------------------------
-# 7. git init (run from project dir so .env is found)
+# 8. git init (run from project dir so .env is found)
 # ------------------------------------------------------------------
 info "Initializing git repo..."
 cd "$PROJECT_DIR"
@@ -148,7 +174,7 @@ if ! "$BIN_PATH" init; then
 fi
 
 # ------------------------------------------------------------------
-# 8. Copy .env to config dir for daemon access
+# 9. Copy .env to config dir for daemon access
 # ------------------------------------------------------------------
 TRACKER_CONFIG_DIR="$HOME/.config/tracker"
 mkdir -p "$TRACKER_CONFIG_DIR"
@@ -156,7 +182,7 @@ cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
 info "Copied .env to $TRACKER_CONFIG_DIR/.env"
 
 # ------------------------------------------------------------------
-# 9. Create systemd user service
+# 10. Create systemd user service
 # ------------------------------------------------------------------
 info "Creating systemd user service..."
 
@@ -181,7 +207,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now tracker.service
 
 # ------------------------------------------------------------------
-# 10. Verify service is running
+# 11. Verify service is running
 # ------------------------------------------------------------------
 sleep 1
 if systemctl --user is-active --quiet tracker.service; then
@@ -192,7 +218,7 @@ else
 fi
 
 # ------------------------------------------------------------------
-# 11. Done
+# 12. Done
 # ------------------------------------------------------------------
 echo ""
 info "==========================================="
