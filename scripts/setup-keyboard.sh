@@ -49,6 +49,6 @@ while true; do
     echo "KEYBOARD_DEVICE=$device" > "$env_file"
     echo ""
     echo "Saved $device to $env_file"
-    echo "Run ./run.sh to start tracking."
+    echo "Continuing with setup..."
     exit 0
 done
