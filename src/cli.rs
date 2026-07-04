@@ -9,22 +9,20 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum KeyPressStatus {
-    /// start the daemon in the background
+    /// start the daemon in the background (run by systemd service tracker)
     #[command(hide = true)]
     Daemon,
 
+    /// Init git repo that stores the keystrokes (run by ./install.sh, do not run again).
+    #[command(hide = true)]
+    Init,
+
     /// Get current keypress status
     Status,
-
-    /// Init git repo that stores the keystrokes.
-    Init,
 
     /// Push the current session
     Push,
 
     /// Pull into current session
     Pull,
-
-    /// Generate daily report
-    Report,
 }
