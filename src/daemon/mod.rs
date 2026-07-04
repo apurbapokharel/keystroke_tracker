@@ -16,8 +16,17 @@ use crate::ipc::IPCCommand;
 const SOCKET_NAME: &str = "tracker.sock";
 const KEYBOARD_DEVICE: &str = "KEYBOARD_DEVICE=";
 
+fn get_env_path() -> PathBuf {
+    let config_path = dirs::config_dir()
+        .map(|p| p.join("tracker/.env"))
+        .filter(|p| p.exists());
+    config_path.unwrap_or_else(|| PathBuf::from(".env"))
+}
+
 pub fn read_env_key(key: &str) -> anyhow::Result<String> {
-    let content = std::fs::read_to_string(".env").expect(".env does not exist");
+    let env_path = get_env_path();
+    let content =
+        std::fs::read_to_string(&env_path).unwrap_or_else(|_| panic!(".env not found at {}", env_path.display()));
     for line in content.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix(key) {

@@ -148,7 +148,15 @@ if ! "$BIN_PATH" init; then
 fi
 
 # ------------------------------------------------------------------
-# 8. Create systemd user service
+# 8. Copy .env to config dir for daemon access
+# ------------------------------------------------------------------
+TRACKER_CONFIG_DIR="$HOME/.config/tracker"
+mkdir -p "$TRACKER_CONFIG_DIR"
+cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
+info "Copied .env to $TRACKER_CONFIG_DIR/.env"
+
+# ------------------------------------------------------------------
+# 9. Create systemd user service
 # ------------------------------------------------------------------
 info "Creating systemd user service..."
 
@@ -161,6 +169,7 @@ After=network.target
 
 [Service]
 ExecStart=%h/.local/bin/tracker daemon
+WorkingDirectory=%h/.config/tracker
 Restart=always
 RestartSec=5
 
@@ -172,7 +181,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now tracker.service
 
 # ------------------------------------------------------------------
-# 9. Verify service is running
+# 10. Verify service is running
 # ------------------------------------------------------------------
 sleep 1
 if systemctl --user is-active --quiet tracker.service; then
@@ -183,7 +192,7 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Done
+# 11. Done
 # ------------------------------------------------------------------
 echo ""
 info "==========================================="
