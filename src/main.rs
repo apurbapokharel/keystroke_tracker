@@ -2,7 +2,7 @@ mod cli;
 mod daemon;
 mod ipc;
 use crate::daemon::tracker::TrackerState;
-use anyhow::{Ok, bail};
+use anyhow::Ok;
 use chrono::Local;
 use clap::Parser;
 use ipc::IPCCommand;
@@ -82,6 +82,10 @@ async fn main() -> anyhow::Result<()> {
             let git_dir = home_dir.join(&git_dir_str);
             pull_repo(&git_dir).expect("pull failed");
         }
+        KeyPressStatus::Reconfigure => {
+            daemon::reconfigure()?;
+            println!("Run: systemctl --user restart tracker.service");
+        }
         KeyPressStatus::Push => {
             println!("Push");
             //1. read contents from .env.
@@ -148,9 +152,7 @@ async fn main() -> anyhow::Result<()> {
             //6. reset TrackerState after successfull push
             reset_tracker().await.expect("unable to reset tracker");
         }
-        _ => {
-            bail!("This command is not supported {:?}", parsed_command.get)
-        }
+
     }
     Ok(())
 }

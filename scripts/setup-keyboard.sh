@@ -46,7 +46,11 @@ while true; do
         continue
     fi
 
-    echo "KEYBOARD_DEVICE=$device" > "$env_file"
+    if grep -q "^KEYBOARD_DEVICE=" "$env_file" 2>/dev/null; then
+        sed -i "s|^KEYBOARD_DEVICE=.*|KEYBOARD_DEVICE=$device|" "$env_file"
+    else
+        echo "KEYBOARD_DEVICE=$device" >> "$env_file"
+    fi
     echo ""
     echo "Saved $device to $env_file"
     echo "Continuing with setup..."

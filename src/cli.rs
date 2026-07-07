@@ -25,4 +25,7 @@ pub enum KeyPressStatus {
 
     /// Pull into current session
     Pull,
+
+    /// Re-run keyboard setup and update device path
+    Reconfigure,
 }

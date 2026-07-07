@@ -5,7 +5,9 @@ use anyhow::bail;
 use chrono::Timelike;
 use chrono::prelude::*;
 use evdev::{Device, EventSummary, KeyCode};
+use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -25,8 +27,8 @@ fn get_env_path() -> PathBuf {
 
 pub fn read_env_key(key: &str) -> anyhow::Result<String> {
     let env_path = get_env_path();
-    let content =
-        std::fs::read_to_string(&env_path).unwrap_or_else(|_| panic!(".env not found at {}", env_path.display()));
+    let content = std::fs::read_to_string(&env_path)
+        .unwrap_or_else(|_| panic!(".env not found at {}", env_path.display()));
     for line in content.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix(key) {
@@ -116,6 +118,29 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
     // Ok(())
+}
+
+pub fn reconfigure() -> anyhow::Result<()> {
+    let project_dir = read_env_key("PROJECT_DIR=")?;
+    let script = PathBuf::from(&project_dir).join("scripts/setup-keyboard.sh");
+
+    let status = Command::new("bash").arg(&script).status()?;
+    if !status.success() {
+        bail!("keyboard setup failed");
+    }
+
+    // Copy updated .env to config dir so systemd daemon picks it up
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("no config dir"))?
+        .join("tracker");
+    fs::create_dir_all(&config_dir)?;
+    fs::copy(
+        PathBuf::from(&project_dir).join(".env"),
+        config_dir.join(".env"),
+    )?;
+    println!("Updated {}", config_dir.join(".env").display());
+
+    Ok(())
 }
 
 async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Result<()> {

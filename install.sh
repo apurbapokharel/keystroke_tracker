@@ -121,6 +121,12 @@ if ! grep -q "^GIT_DIR=" "$ENV_FILE" 2>/dev/null; then
     info "GIT_DIR=.local/state/tracker_data/ added to .env"
 fi
 
+# Add PROJECT_DIR if not present
+if ! grep -q "^PROJECT_DIR=" "$ENV_FILE" 2>/dev/null; then
+    echo "PROJECT_DIR=$PROJECT_DIR" >> "$ENV_FILE"
+    info "PROJECT_DIR=$PROJECT_DIR added to .env"
+fi
+
 # Prompt for URL if not present
 if ! grep -q "^URL=" "$ENV_FILE" 2>/dev/null; then
     echo ""
