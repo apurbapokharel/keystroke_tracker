@@ -9,9 +9,13 @@ BIN_PATH="$BIN_DIR/tracker"
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_PATH="$SERVICE_DIR/tracker.service"
 
+TRACKER_CONFIG_DIR="$HOME/.config/tracker"
+
 FORCE=0
+RECONFIGURE=0
 for arg in "$@"; do
     [ "$arg" = "--force" ] && FORCE=1
+    [ "$arg" = "--reconfigure" ] && RECONFIGURE=1
 done
 
 RED='\033[0;31m'
@@ -74,7 +78,21 @@ fi
 info "All prerequisites found."
 
 # ------------------------------------------------------------------
-# 3. Check if already running
+# 3a. Reconfigure mode — keyboard setup only
+# ------------------------------------------------------------------
+if [ "$RECONFIGURE" -eq 1 ]; then
+    info "Reconfigure mode — updating keyboard device only..."
+    bash "$PROJECT_DIR/scripts/setup-keyboard.sh"
+    mkdir -p "$TRACKER_CONFIG_DIR"
+    cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
+    info "Restarting tracker.service..."
+    systemctl --user restart tracker.service || true
+    info "Reconfigure complete."
+    exit 0
+fi
+
+# ------------------------------------------------------------------
+# 3b. Check if already running
 # ------------------------------------------------------------------
 if systemctl --user is-active --quiet tracker.service 2>/dev/null; then
     if [ "$FORCE" -ne 1 ]; then
@@ -182,7 +200,6 @@ fi
 # ------------------------------------------------------------------
 # 9. Copy .env to config dir for daemon access
 # ------------------------------------------------------------------
-TRACKER_CONFIG_DIR="$HOME/.config/tracker"
 mkdir -p "$TRACKER_CONFIG_DIR"
 cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
 info "Copied .env to $TRACKER_CONFIG_DIR/.env"
