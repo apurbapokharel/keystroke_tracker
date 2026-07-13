@@ -11,7 +11,7 @@ use std::{fs, path::Path};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use cli::{Args, KeyPressStatus};
+use cli::{Args, TrackerCLI};
 use daemon::{get_socket, read_env_key};
 
 const URL: &str = "URL=";
@@ -22,14 +22,14 @@ const GIT_DIR: &str = "GIT_DIR=";
 async fn main() -> anyhow::Result<()> {
     let parsed_command = Args::parse();
     match parsed_command.get {
-        KeyPressStatus::Daemon => {
+        TrackerCLI::Daemon => {
             daemon::run().await.expect("daemon failed to run");
         }
-        KeyPressStatus::Status => {
+        TrackerCLI::Status => {
             let tracker_state = get_status().await.expect("get_status failed");
             tracker_state.display();
         }
-        KeyPressStatus::Init => {
+        TrackerCLI::Init => {
             println!("Init");
             let url = read_env_key(URL).expect("unable to read URL=");
             if !url.starts_with("git@") && !url.starts_with("https://") {
@@ -76,17 +76,17 @@ async fn main() -> anyhow::Result<()> {
                 .current_dir(&git_dir)
                 .status()?;
         }
-        KeyPressStatus::Pull => {
+        TrackerCLI::Pull => {
             let home_dir = dirs::home_dir().expect("failed to get home dir");
             let git_dir_str = read_env_key(GIT_DIR).expect("unable to read GIT_DIR=");
             let git_dir = home_dir.join(&git_dir_str);
             pull_repo(&git_dir).expect("pull failed");
         }
-        KeyPressStatus::Reconfigure => {
+        TrackerCLI::Reconfigure { target } => {
             daemon::reconfigure()?;
             println!("Run: systemctl --user restart tracker.service");
         }
-        KeyPressStatus::Push => {
+        TrackerCLI::Push => {
             println!("Push");
             //1. read contents from .env.
             let home_dir = dirs::home_dir().expect("failed to get home dir");
@@ -108,13 +108,13 @@ async fn main() -> anyhow::Result<()> {
             let tracker_state = get_status().await.expect("get_status failed");
 
             //4. read the current json inside git_dir
-            //4.1 if no json then export to json
+            //4.1 if no json then export current state (tracker_state) to json
             if !git_dir_model.join("keystrokes.json").exists() {
                 tracker_state
                     .export_to_json(&git_dir_model, true)
                     .expect("export to json failed");
             }
-            // 4.2 else add the state to json and export new added json (which is also export_to_json with same file name)
+            // 4.2 else add the stored state with current state (tracker_state) and export new added json (which is also export_to_json with same file name)
             else {
                 let stored_state_string = fs::read_to_string(git_dir_model.join("keystrokes.json"))
                     .expect("failed to read keystrokes.json to string");
@@ -152,7 +152,6 @@ async fn main() -> anyhow::Result<()> {
             //6. reset TrackerState after successfull push
             reset_tracker().await.expect("unable to reset tracker");
         }
-
     }
     Ok(())
 }

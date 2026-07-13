@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-pub const CURRENT_VERSION: u8 = 1;
+pub const CURRENT_VERSION: u8 = 2;
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct Tracker {
@@ -18,7 +18,26 @@ pub struct TrackerState {
     /// 0 is 12 am .... 24 is 11pm
     /// String is the evdev key name (e.g. "KEY_A", "KEY_SPACE"),
     /// u32 is times pressed
-    pub count_freq: HashMap<u8, HashMap<String, u32>>,
+    pub keyboard_state: HashMap<u8, HashMap<String, u32>>,
+    /// mouse_tracks
+    pub mouse_state: MouseState,
+    /// screen active session
+    /// hours to active minute
+    pub display_state: HashMap<u8, u32>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+pub struct MouseState {
+    /// right_click count
+    pub right_click: u32,
+    /// left_click count
+    pub left_click: u32,
+    /// middle_click count
+    pub middle_click: u32,
+    /// distance mouse pointer moved
+    pub mouse_inches: f32,
+    /// number of mouse scrolls
+    pub mouse_scrolls: u32,
 }
 
 impl Tracker {
@@ -33,18 +52,23 @@ impl TrackerState {
     fn new() -> TrackerState {
         TrackerState {
             version: CURRENT_VERSION,
-            count_freq: HashMap::new(),
+            keyboard_state: HashMap::new(),
+            mouse_state: MouseState::default(),
+            display_state: HashMap::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.count_freq = HashMap::new()
+        self.keyboard_state = HashMap::new();
+        self.mouse_state = MouseState::default();
+        self.display_state = HashMap::new();
     }
 
+    // TODO: need a proper display method now
     pub fn display(&self) {
         println!("Version {}", self.version);
         let mut total: u32 = 0;
-        for (k, v) in &self.count_freq {
+        for (k, v) in &self.keyboard_state {
             println!("For hour {}", k);
             for (k2, v2) in v {
                 println!("Key {}, Pressed {} times", k2, v2);
@@ -55,11 +79,26 @@ impl TrackerState {
     }
 
     pub fn add_jsons(&mut self, current_state: &TrackerState) -> anyhow::Result<()> {
-        for (hour, inner_map) in &current_state.count_freq {
-            let entry = self.count_freq.entry(*hour).or_insert_with(HashMap::new);
+        // adding keyboard_state
+        for (hour, inner_map) in &current_state.keyboard_state {
+            let entry = self
+                .keyboard_state
+                .entry(*hour)
+                .or_insert_with(HashMap::new);
             for (key, count) in inner_map {
                 *entry.entry(key.clone()).or_insert(0) += count;
             }
+        }
+        // adding mouse_state
+        self.mouse_state.right_click += current_state.mouse_state.right_click;
+        self.mouse_state.left_click += current_state.mouse_state.left_click;
+        self.mouse_state.middle_click += current_state.mouse_state.middle_click;
+        self.mouse_state.mouse_inches += current_state.mouse_state.mouse_inches;
+        self.mouse_state.mouse_scrolls += current_state.mouse_state.mouse_scrolls;
+
+        // adding display_state
+        for (hour, count) in &current_state.display_state {
+            *self.display_state.entry(*hour).or_insert(0) += count;
         }
         Ok(())
     }
@@ -86,15 +125,19 @@ mod tests {
     fn test_my_message_decoder() {
         let mut state = TrackerState::default();
 
-        state.count_freq.insert(10, HashMap::new());
-        state.count_freq.get_mut(&10).unwrap().insert("KEY_A".to_string(), 3);
+        state.keyboard_state.insert(10, HashMap::new());
+        state
+            .keyboard_state
+            .get_mut(&10)
+            .unwrap()
+            .insert("KEY_A".to_string(), 3);
 
-        for (k, v) in &state.count_freq {
+        for (k, v) in &state.keyboard_state {
             for (k2, v2) in v {
                 println!("{}, {}, {}", k, k2, v2)
             }
         }
-        let json = serde_json::to_string_pretty(&state.count_freq).unwrap();
+        let json = serde_json::to_string_pretty(&state.keyboard_state).unwrap();
         println!("json is {:?}", json);
         assert!(1 == 1, "assertion failed")
     }
