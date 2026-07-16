@@ -155,49 +155,50 @@ pub async fn run() -> anyhow::Result<()> {
     });
 
     // 4. run a seperate task that tracks the active scesion time.
-    // NOTE: I use hyprland so this only works for hyprland
-    // let session_bus_connection = Connection::session()
-    //     .await
-    //     .expect("unable to connect to session bus");
+    //NOTE: this is very very complicated than i thought it would be.
+    //1. i use hyperland. and in order to detect sleep i can subscribe to dbus signal PrepareToSleep
+    //2. figuring this out was no easy task, even with constant mentoring for ai it took me long to
+    //   undertand all of this.
+    //3. no 2) just solves sleep problem but what if we lock without sleeping that should also not
+    //   be counted as a active time.
+    //4. this is where hyperland cut back, hyperland user hyprlock which does not throw the
+    //   underlying LockedHint signal so that does not change on lock and hence it does not help.
+    //5. the work around and this is all mentoring of AI i would not be able to figure this out in
+    //   this little time, use pgrep -x hyprlock.
+    //5.1 use this to see how it works if needed: while true; do pgrep -x hyprlock; echo "---"; sleep 1; done
+    //So, this is my implementation idea so far. Will run this through claude and see if i get
+    //better recommendation.
+
+    //NOTE: the code below is me subsribing to hyperland socket and reading their events.
+    //This will be useful if i need to modify this and get active session by the application im
+    //running, eg brave 2hr, kitty 3hr and so on..
+    //This is for active session 2.0
+
+    // let xdg_runtime_dir = std::env::var(XDG_RUNTIME).expect("unable to read env");
+    // let hypr_instance_signature = std::env::var(HYPR_SIG).expect("unable to read env");
+    // let socket_path = PathBuf::new()
+    //     .join(&xdg_runtime_dir)
+    //     .join("hypr")
+    //     .join(&hypr_instance_signature)
+    //     .join(".socket2.sock");
     //
-    // let message = session_bus_connection
-    //     .call_method(
-    //         Some("org.freedesktop.ScreenSaver"),
-    //         "/org/freedesktop/ScreenSaver",
-    //         Some("org.freedesktop.ScreenSaver"),
-    //         "GetActive",
-    //         &(),
-    //     )
+    // let hypr_stream = UnixStream::connect(socket_path.as_path())
     //     .await
-    //     .expect("failed to call getActive using zbus");
-    // let reply: u32 = message.body().deserialize().unwrap();
-    // println!("reply {}", reply);
-
-    let xdg_runtime_dir = std::env::var(XDG_RUNTIME).expect("unable to read env");
-    let hypr_instance_signature = std::env::var(HYPR_SIG).expect("unable to read env");
-    let socket_path = PathBuf::new()
-        .join(&xdg_runtime_dir)
-        .join("hypr")
-        .join(&hypr_instance_signature)
-        .join(".socket2.sock");
-
-    let hypr_stream = UnixStream::connect(socket_path.as_path())
-        .await
-        .expect("failed to connect to hypr socket");
-
-    // NOTE: this is where reading line by line comes into play,
-    // because i don't know the size of the entire payload and i also don't need to.
-    // jhola also has this same code but since that was all vibes I could never figure why it was used.
-
-    let reader = BufReader::new(hypr_stream);
-    let mut lines = reader.lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .expect("reading line by line failed from stream")
-    {
-        println!("line {}", line);
-    }
+    //     .expect("failed to connect to hypr socket");
+    //
+    // // NOTE: this is where reading line by line comes into play,
+    // // because i don't know the size of the entire payload and i also don't need to.
+    // // jhola also has this same code but since that was all vibes I could never figure why it was used.
+    //
+    // let reader = BufReader::new(hypr_stream);
+    // let mut lines = reader.lines();
+    // while let Some(line) = lines
+    //     .next_line()
+    //     .await
+    //     .expect("reading line by line failed from stream")
+    // {
+    //     println!("line {}", line);
+    // }
 
     // 5. handle new connections to this socket.
     loop {

@@ -1,7 +1,10 @@
 mod cli;
 mod daemon;
 mod ipc;
+mod zzbus;
+
 use crate::daemon::tracker::TrackerState;
+use crate::zzbus::watch_login_jobs;
 use anyhow::Ok;
 use chrono::Local;
 use clap::Parser;
@@ -151,6 +154,9 @@ async fn main() -> anyhow::Result<()> {
 
             //6. reset TrackerState after successfull push
             reset_tracker().await.expect("unable to reset tracker");
+        }
+        TrackerCLI::Test => {
+            watch_login_jobs().await.expect("zbuss error");
         }
     }
     Ok(())

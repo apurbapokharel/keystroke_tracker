@@ -31,6 +31,9 @@ pub enum TrackerCLI {
         #[command(subcommand)]
         target: Option<ReconfigureTarget>,
     },
+
+    /// just for test will need to remove later
+    Test,
 }
 
 #[derive(Subcommand, Debug)]
