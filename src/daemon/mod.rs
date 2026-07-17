@@ -5,12 +5,15 @@ use anyhow::bail;
 use chrono::Timelike;
 use chrono::prelude::*;
 use evdev::{Device, EventSummary, KeyCode, RelativeAxisCode};
+use futures_util::lock::Mutex;
+use futures_util::stream::StreamExt;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use zbus::{Connection, proxy};
 
 use crate::daemon::tracker::MouseState;
 use crate::daemon::tracker::Tracker;
@@ -23,6 +26,18 @@ const MOUSE_DEVICE: &str = "MOUSE_DEVICE=";
 const MOUSE_DPI: &str = "MOUSE_DPI=";
 const HYPR_SIG: &str = "HYPRLAND_INSTANCE_SIGNATURE";
 const XDG_RUNTIME: &str = "XDG_RUNTIME_DIR";
+
+#[proxy(
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1",
+    interface = "org.freedesktop.login1.Manager"
+)]
+
+trait Login1Manager {
+    // Defines signature for D-Bus signal named `PrepareForSleep`
+    #[zbus(signal)]
+    fn prepare_for_sleep(&self, status: bool);
+}
 
 fn get_env_path() -> PathBuf {
     let config_path = dirs::config_dir()
@@ -113,14 +128,13 @@ pub async fn run() -> anyhow::Result<()> {
     // 3. run an endless loop that process the mouse events.
     let mouse_path = read_env_key(MOUSE_DEVICE).expect("error reading .env");
     let mut mouse_device = Device::open(mouse_path)?;
-    let tracker: Arc<Tracker> = Arc::new(Tracker::new());
-    let tracker_write = Arc::clone(&tracker);
+    let tracker_write_2 = Arc::clone(&tracker);
     tokio::task::spawn_blocking(move || {
         loop {
             for event in mouse_device.fetch_events().unwrap() {
                 // println!("mouse event destructured {:?}", event.destructure());
                 // let hour_indicator = Local::now().hour() as u8;
-                let mut tracker_state = tracker_write
+                let mut tracker_state = tracker_write_2
                     .data
                     .lock()
                     .expect("unable to get tracker_state mutex lock");
@@ -161,44 +175,67 @@ pub async fn run() -> anyhow::Result<()> {
     //   undertand all of this.
     //3. no 2) just solves sleep problem but what if we lock without sleeping that should also not
     //   be counted as a active time.
-    //4. this is where hyperland cut back, hyperland user hyprlock which does not throw the
-    //   underlying LockedHint signal so that does not change on lock and hence it does not help.
-    //5. the work around and this is all mentoring of AI i would not be able to figure this out in
-    //   this little time, use pgrep -x hyprlock.
-    //5.1 use this to see how it works if needed: while true; do pgrep -x hyprlock; echo "---"; sleep 1; done
+    //4. this is where hyperland bites back, hyperland uses hyprlock which does not throw the
+    //   underlying dbus's LockedHint signal so that does not change on lock and hence it does not help.
+    //5. the work around has two options and this is all mentoring of AI i would not be able to figure this out in
+    //   this little time,
+    //5.1 use pgrep -x hyprlock to see how it works if needed: while true; do pgrep -x hyprlock; echo "---"; sleep 1; done
+    //5.2 monitor hyperland socket
     //So, this is my implementation idea so far. Will run this through claude and see if i get
     //better recommendation.
 
-    //NOTE: the code below is me subsribing to hyperland socket and reading their events.
-    //This will be useful if i need to modify this and get active session by the application im
-    //running, eg brave 2hr, kitty 3hr and so on..
-    //This is for active session 2.0
+    // spwan a task that subscribes to the dbus PrepareToSleep signal using zbus.
+    let is_asleep: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
+    let is_locked: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
+    // refer to https://z-galaxy.github.io/zbus/client.html#signals for this code
+    let connection = Connection::system().await?;
+    let login_proxy = Login1ManagerProxy::new(&connection).await?;
+    let mut new_stream = login_proxy.receive_prepare_for_sleep().await?;
 
-    // let xdg_runtime_dir = std::env::var(XDG_RUNTIME).expect("unable to read env");
-    // let hypr_instance_signature = std::env::var(HYPR_SIG).expect("unable to read env");
-    // let socket_path = PathBuf::new()
-    //     .join(&xdg_runtime_dir)
-    //     .join("hypr")
-    //     .join(&hypr_instance_signature)
-    //     .join(".socket2.sock");
-    //
-    // let hypr_stream = UnixStream::connect(socket_path.as_path())
-    //     .await
-    //     .expect("failed to connect to hypr socket");
-    //
-    // // NOTE: this is where reading line by line comes into play,
-    // // because i don't know the size of the entire payload and i also don't need to.
-    // // jhola also has this same code but since that was all vibes I could never figure why it was used.
-    //
-    // let reader = BufReader::new(hypr_stream);
-    // let mut lines = reader.lines();
-    // while let Some(line) = lines
-    //     .next_line()
-    //     .await
-    //     .expect("reading line by line failed from stream")
-    // {
-    //     println!("line {}", line);
-    // }
+    let is_asleep_clone = Arc::clone(&is_asleep);
+    tokio::task::spawn(async move {
+        while let Some(msg) = new_stream.next().await {
+            let args: PrepareForSleepArgs = msg.args().expect("Error parsing message");
+            let mut status = is_asleep_clone.lock().await;
+            *status = args.status;
+        }
+    });
+
+    // spwan a task that monitors hyprlock status.
+    let is_locked_clone = Arc::clone(&is_locked);
+    let xdg_runtime_dir = std::env::var(XDG_RUNTIME).expect("unable to read env");
+    let hypr_instance_signature = std::env::var(HYPR_SIG).expect("unable to read env");
+    let socket_path = PathBuf::new()
+        .join(&xdg_runtime_dir)
+        .join("hypr")
+        .join(&hypr_instance_signature)
+        .join(".socket2.sock");
+    let hypr_stream = UnixStream::connect(socket_path.as_path())
+        .await
+        .expect("failed to connect to hypr socket");
+    // NOTE: this is where reading line by line comes into play,
+    // because i don't know the size of the entire payload and i also don't need to.
+    // jhola also has this same code but since that was all vibes I could never figure why it was used.
+    let reader = BufReader::new(hypr_stream);
+    let mut lines = reader.lines();
+    let mut prev_line: Option<String> = None;
+    tokio::task::spawn(async move {
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .expect("reading line by line failed from stream")
+        {
+            if let Some(prev) = &prev_line {
+                if prev == "activewindow>>" && line == "activewindowv2>>" {
+                    let mut status = is_locked_clone.lock().await;
+                    *status = true;
+                }
+            }
+            prev_line = Some(line);
+        }
+    });
+
+    // timer to increment counter iff  both true
 
     // 5. handle new connections to this socket.
     loop {

@@ -8,6 +8,10 @@ pub const CURRENT_VERSION: u8 = 2;
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct Tracker {
+    // NOTE: i use a mutex here in the sturct rather than making the struct instanct a mutex.
+    // I do this as per the recommendtaion in https://tokio.rs/tokio/tutorial/shared-state
+    // TBH these tiny nuances are why I honestly feel you learn more by doing but doing is not
+    // always easy, specially when it comes to rust.
     pub data: Mutex<TrackerState>,
 }
 
