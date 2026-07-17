@@ -38,8 +38,11 @@ pub struct MouseState {
     pub left_click: u32,
     /// middle_click count
     pub middle_click: u32,
-    /// distance mouse pointer moved
-    pub mouse_inches: f32,
+    /// AI: distance mouse pointer moved (physical desk travel, in inches).
+    /// f64 rather than f32: this accumulates millions of tiny per-report
+    /// increments over a day, and an f32 sum stops growing once it passes
+    /// ~1e5 because the increments fall below its precision.
+    pub mouse_inches: f64,
     /// number of mouse scrolls
     pub mouse_scrolls: u32,
 }

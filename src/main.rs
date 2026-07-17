@@ -11,6 +11,7 @@ use std::process::Command;
 use std::{fs, path::Path};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
 
 use cli::{Args, TrackerCLI};
 use daemon::{get_socket, read_env_key};
@@ -161,6 +162,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// AI: Write a command to the daemon using the same u32-length-prefixed framing
+/// the daemon uses for its responses.
+///
+/// AI: `writer` is typed as the concrete `&mut OwnedWriteHalf` because that is the
+/// only thing we ever pass in. If this function later needs to write to more than
+/// one kind of destination (a plain file, an in-memory `Vec<u8>` in a unit test, a
+/// TCP stream, a TLS stream, ...), swap the parameter for a generic bound:
+///
+///     async fn send_command(writer: &mut (impl AsyncWriteExt + Unpin), action: &str)
+///
+/// `impl AsyncWriteExt + Unpin` means "any type that can be written to asynchronously"
+/// — `AsyncWriteExt` supplies `.write_all()`/`.flush()`, and `Unpin` lets those be
+/// `.await`ed by mutable reference. The body here does not change at all; only the
+/// signature widens. The usual trade-off: name the concrete type while there is one
+/// caller (easier to read), reach for the generic once you genuinely need several.
+async fn send_command(writer: &mut OwnedWriteHalf, action: &str) -> anyhow::Result<()> {
+    let command = IPCCommand {
+        action: action.to_string(),
+    };
+    let payload = serde_json::to_vec(&command).expect("failed to serialize IPCCommand");
+    writer
+        .write_all(&(payload.len() as u32).to_le_bytes())
+        .await
+        .expect("failed to write length prefix");
+    writer
+        .write_all(&payload)
+        .await
+        .expect("failed to write command body");
+    writer.flush().await.expect("failed to flush command");
+    Ok(())
+}
+
 async fn reset_tracker() -> anyhow::Result<()> {
     ensure_daemon_running().await.expect("daemon failed to run");
     let socket_path = get_socket().expect("failed to get socket");
@@ -168,15 +201,7 @@ async fn reset_tracker() -> anyhow::Result<()> {
         .await
         .expect("failed to connect to socket");
     let (_reader, mut writer) = stream.into_split();
-    let command = IPCCommand {
-        action: "Reset".to_string(),
-    };
-    let serialized_command =
-        serde_json::to_string(&command).expect("failed to convert struct IPCCommand into string");
-    let _size = writer
-        .write(serialized_command.as_bytes())
-        .await
-        .expect("failed to write");
+    send_command(&mut writer, "Reset").await?;
     Ok(())
 }
 
@@ -188,15 +213,7 @@ async fn get_status() -> anyhow::Result<TrackerState> {
         .expect("failed to connect to socket");
     let (mut reader, mut writer) = stream.into_split();
     // request the status
-    let command = IPCCommand {
-        action: "Read".to_string(),
-    };
-    let serialized_command =
-        serde_json::to_string(&command).expect("failed to convert struct IPCCommand into string");
-    let _size = writer
-        .write(serialized_command.as_bytes())
-        .await
-        .expect("failed to write");
+    send_command(&mut writer, "Read").await?;
     // get the status
     let mut len_buf = [0u8; 4];
     reader
