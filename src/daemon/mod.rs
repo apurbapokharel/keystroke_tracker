@@ -15,7 +15,6 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use zbus::{Connection, proxy};
 
-use crate::daemon::tracker::MouseState;
 use crate::daemon::tracker::Tracker;
 use crate::ipc::IPCCommand;
 
@@ -185,8 +184,8 @@ pub async fn run() -> anyhow::Result<()> {
     //better recommendation.
 
     // spwan a task that subscribes to the dbus PrepareToSleep signal using zbus.
-    let is_asleep: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
-    let is_locked: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
+    let is_asleep: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let is_locked: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     // refer to https://z-galaxy.github.io/zbus/client.html#signals for this code
     let connection = Connection::system().await?;
     let login_proxy = Login1ManagerProxy::new(&connection).await?;
@@ -225,17 +224,48 @@ pub async fn run() -> anyhow::Result<()> {
             .await
             .expect("reading line by line failed from stream")
         {
-            if let Some(prev) = &prev_line {
-                if prev == "activewindow>>" && line == "activewindowv2>>" {
-                    let mut status = is_locked_clone.lock().await;
-                    *status = true;
-                }
+            // println!("line {:?}", line);
+            let mut status = is_locked_clone.lock().await;
+            if let Some(prev) = &prev_line
+                && prev == "activewindow>>,"
+                && line == "activewindowv2>>"
+            {
+                *status = true;
+            } else {
+                *status = false;
             }
             prev_line = Some(line);
         }
     });
 
     // timer to increment counter iff  both true
+    let is_locked_clone_2 = Arc::clone(&is_locked);
+    let is_asleep_clone_2 = Arc::clone(&is_asleep);
+    let tracker_write_clone = Arc::clone(&tracker);
+    tokio::task::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+        loop {
+            interval.tick().await;
+            println!(
+                "lock status is {} and sleep status is {}",
+                *is_locked_clone_2.lock().await,
+                *is_asleep_clone_2.lock().await
+            );
+            if !*is_locked_clone_2.lock().await && !*is_asleep_clone_2.lock().await {
+                let hour_indicator = Local::now().hour() as u8;
+                let mut tracker_state = tracker_write_clone
+                    .data
+                    .lock()
+                    .expect("unable to get tracker_state mutex lock");
+
+                tracker_state
+                    .display_state
+                    .entry(hour_indicator)
+                    .and_modify(|count| *count += 3)
+                    .or_insert(3);
+            }
+        }
+    });
 
     // 5. handle new connections to this socket.
     loop {

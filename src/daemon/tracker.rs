@@ -68,18 +68,35 @@ impl TrackerState {
         self.display_state = HashMap::new();
     }
 
-    // TODO: need a proper display method now
     pub fn display(&self) {
-        println!("Version {}", self.version);
+        println!("=== Tracker State (version {}) ===", self.version);
+
         let mut total: u32 = 0;
-        for (k, v) in &self.keyboard_state {
-            println!("For hour {}", k);
-            for (k2, v2) in v {
-                println!("Key {}, Pressed {} times", k2, v2);
-                total += v2;
+        for (hour, keys) in &self.keyboard_state {
+            println!("  Hour {}:", hour);
+            for (key, count) in keys {
+                println!("    {}: {}", key, count);
+                total += count;
             }
         }
-        println!("Total presses {}", total)
+        println!("  Total key presses: {}", total);
+
+        println!("  Mouse:");
+        println!("    Left clicks:   {}", self.mouse_state.left_click);
+        println!("    Right clicks:  {}", self.mouse_state.right_click);
+        println!("    Middle clicks: {}", self.mouse_state.middle_click);
+        println!("    Inches moved:  {:.2}", self.mouse_state.mouse_inches);
+        println!("    Scrolls:       {}", self.mouse_state.mouse_scrolls);
+
+        let mut total_active: u32 = 0;
+        for (hour, secs) in &self.display_state {
+            println!("    Hour {} active: {}s", hour, secs);
+            total_active += secs;
+        }
+        let hrs = total_active / 3600;
+        let mins = (total_active % 3600) / 60;
+        let secs = total_active % 60;
+        println!("  Total screen-on time: {}h {}m {}s", hrs, mins, secs);
     }
 
     pub fn add_jsons(&mut self, current_state: &TrackerState) -> anyhow::Result<()> {

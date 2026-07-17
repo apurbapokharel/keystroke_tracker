@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
             let git_dir = home_dir.join(&git_dir_str);
             pull_repo(&git_dir).expect("pull failed");
         }
+        //TODO: need to handle the target
         TrackerCLI::Reconfigure { target } => {
             daemon::reconfigure()?;
             println!("Run: systemctl --user restart tracker.service");
