@@ -18,7 +18,6 @@ use cli::{Args, TrackerCLI};
 use daemon::{get_socket, read_env_key};
 
 const URL: &str = "URL=";
-const _REPO_NAME: &str = "REPO_NAME=";
 const GIT_DIR: &str = "GIT_DIR=";
 
 #[tokio::main]
@@ -87,10 +86,20 @@ async fn main() -> anyhow::Result<()> {
             let git_dir = home_dir.join(&git_dir_str);
             pull_repo(&git_dir)?;
         }
-        //TODO: need to handle the target
         TrackerCLI::Reconfigure { target } => {
-            daemon::reconfigure()?;
-            println!("Run: systemctl --user restart tracker.service");
+            daemon::reconfigure(target)?;
+
+            println!("Restarting tracker.service to pick up the new config...");
+            let status = Command::new("systemctl")
+                .args(["--user", "restart", "tracker.service"])
+                .status()?;
+            if status.success() {
+                println!("tracker.service restarted.");
+            } else {
+                eprintln!(
+                    "Automatic restart failed. Run it manually:\n  systemctl --user restart tracker.service"
+                );
+            }
         }
         TrackerCLI::Push => {
             println!("Push");

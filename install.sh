@@ -13,9 +13,11 @@ TRACKER_CONFIG_DIR="$HOME/.config/tracker"
 
 FORCE=0
 RECONFIGURE=0
+UPDATE=0
 for arg in "$@"; do
     [ "$arg" = "--force" ] && FORCE=1
     [ "$arg" = "--reconfigure" ] && RECONFIGURE=1
+    [ "$arg" = "--update" ] && UPDATE=1
 done
 
 RED='\033[0;31m'
@@ -78,11 +80,47 @@ fi
 info "All prerequisites found."
 
 # ------------------------------------------------------------------
-# 3a. Reconfigure mode — keyboard setup only
+# 3z. Update mode — rebuild + redeploy binary only (safe to re-run)
+#     Does NOT touch git, the input group, or the systemd unit, so it
+#     never wipes tracked data. Use this after changing the source.
+# ------------------------------------------------------------------
+if [ "$UPDATE" -eq 1 ]; then
+    info "Update mode — rebuilding and redeploying binary..."
+    cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
+
+    info "Installing binary to $BIN_PATH..."
+    mkdir -p "$BIN_DIR"
+    cp "$PROJECT_DIR/target/release/tracker" "$BIN_PATH"
+    chmod +x "$BIN_PATH"
+
+    # Keep the daemon's copy of .env in sync in case keys changed.
+    if [ -f "$ENV_FILE" ]; then
+        mkdir -p "$TRACKER_CONFIG_DIR"
+        cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
+        info "Synced .env to $TRACKER_CONFIG_DIR/.env"
+    fi
+
+    info "Restarting tracker.service..."
+    systemctl --user restart tracker.service || true
+
+    sleep 1
+    if systemctl --user is-active --quiet tracker.service; then
+        info "tracker.service is active and running the new build."
+    else
+        warn "tracker.service is not active. Check:"
+        echo "  systemctl --user status tracker.service"
+        echo "  journalctl --user -u tracker.service -n 50"
+    fi
+    exit 0
+fi
+
+# ------------------------------------------------------------------
+# 3a. Reconfigure mode — keyboard + mouse device setup
 # ------------------------------------------------------------------
 if [ "$RECONFIGURE" -eq 1 ]; then
-    info "Reconfigure mode — updating keyboard device only..."
+    info "Reconfigure mode — updating keyboard and mouse devices..."
     bash "$PROJECT_DIR/scripts/setup-keyboard.sh"
+    bash "$PROJECT_DIR/scripts/setup-mouse.sh"
     mkdir -p "$TRACKER_CONFIG_DIR"
     cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
     info "Restarting tracker.service..."
@@ -113,7 +151,7 @@ if systemctl --user is-active --quiet tracker.service 2>/dev/null; then
 fi
 
 # ------------------------------------------------------------------
-# 4. Keyboard setup
+# 4. Keyboard + mouse setup
 # ------------------------------------------------------------------
 info "Running keyboard setup..."
 if [ ! -f "$PROJECT_DIR/scripts/setup-keyboard.sh" ]; then
@@ -122,14 +160,21 @@ if [ ! -f "$PROJECT_DIR/scripts/setup-keyboard.sh" ]; then
 fi
 bash "$PROJECT_DIR/scripts/setup-keyboard.sh"
 
+info "Running mouse setup..."
+if [ ! -f "$PROJECT_DIR/scripts/setup-mouse.sh" ]; then
+    error "scripts/setup-mouse.sh not found"
+    exit 1
+fi
+bash "$PROJECT_DIR/scripts/setup-mouse.sh"
+
 # ------------------------------------------------------------------
 # 5. Configure .env
 # ------------------------------------------------------------------
 info "Configuring .env..."
 
-# KEYBOARD_DEVICE was set by setup-keyboard.sh, read it back
+# KEYBOARD_DEVICE / MOUSE_DEVICE / MOUSE_DPI were set by the setup scripts
 if [ ! -f "$ENV_FILE" ]; then
-    error ".env not found after keyboard setup"
+    error ".env not found after device setup"
     exit 1
 fi
 

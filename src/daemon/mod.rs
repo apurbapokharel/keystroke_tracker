@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use zbus::{Connection, proxy};
 
+use crate::cli::ReconfigureTarget;
 use crate::daemon::tracker::Tracker;
 use crate::ipc::IPCCommand;
 
@@ -321,13 +322,31 @@ pub async fn run() -> anyhow::Result<()> {
     // Ok(())
 }
 
-pub fn reconfigure() -> anyhow::Result<()> {
-    let project_dir = read_env_key("PROJECT_DIR=")?;
-    let script = PathBuf::from(&project_dir).join("scripts/setup-keyboard.sh");
-
+fn run_setup_script(project_dir: &str, script_name: &str, label: &str) -> anyhow::Result<()> {
+    let script = PathBuf::from(project_dir).join("scripts").join(script_name);
     let status = Command::new("bash").arg(&script).status()?;
     if !status.success() {
-        bail!("keyboard setup failed");
+        bail!("{label} setup failed");
+    }
+    Ok(())
+}
+
+/// Re-run device setup. `None` and `Some(All)` reconfigure both devices;
+/// `Some(Keyboard)`/`Some(Mouse)` reconfigure just that one.
+pub fn reconfigure(target: Option<ReconfigureTarget>) -> anyhow::Result<()> {
+    let project_dir = read_env_key("PROJECT_DIR=")?;
+
+    let (keyboard, mouse) = match target.unwrap_or(ReconfigureTarget::All) {
+        ReconfigureTarget::Keyboard => (true, false),
+        ReconfigureTarget::Mouse => (false, true),
+        ReconfigureTarget::All => (true, true),
+    };
+
+    if keyboard {
+        run_setup_script(&project_dir, "setup-keyboard.sh", "keyboard")?;
+    }
+    if mouse {
+        run_setup_script(&project_dir, "setup-mouse.sh", "mouse")?;
     }
 
     // Copy updated .env to config dir so systemd daemon picks it up
