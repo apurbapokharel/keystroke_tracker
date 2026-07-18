@@ -19,17 +19,24 @@ pub struct Tracker {
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct TrackerState {
     /// adding a version for backward compatibility and autoschema parrsing on the frontend
+    #[serde(default)]
     pub version: u8,
     /// 0 is 12 am .... 24 is 11pm
     /// String is the evdev key name (e.g. "KEY_A", "KEY_SPACE"),
     /// u32 is times pressed.
     /// BTreeMap so hours (and keys) iterate in sorted order — deterministic
     /// `display()` output and stable on-disk JSON key ordering.
+    #[serde(default)]
     pub keyboard_state: BTreeMap<u8, BTreeMap<String, u32>>,
     /// mouse_tracks
+    #[serde(default)]
     pub mouse_state: MouseState,
     /// screen active session
     /// hours to active minute
+    /// `#[serde(default)]` on every field: a JSON file written by an older
+    /// schema (missing newer fields) deserializes with those fields defaulted
+    /// instead of failing, so `push`/`add_jsons` can still merge it.
+    #[serde(default)]
     pub display_state: BTreeMap<u8, u32>,
 }
 
