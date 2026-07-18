@@ -31,7 +31,6 @@ const XDG_RUNTIME: &str = "XDG_RUNTIME_DIR";
     default_path = "/org/freedesktop/login1",
     interface = "org.freedesktop.login1.Manager"
 )]
-
 trait Login1Manager {
     // Defines signature for D-Bus signal named `PrepareForSleep`
     #[zbus(signal)]
@@ -47,9 +46,8 @@ fn get_env_path() -> PathBuf {
 
 pub fn read_env_key(key: &str) -> anyhow::Result<String> {
     let env_path = get_env_path();
-    let content = std::fs::read_to_string(&env_path).expect(".env not found");
-    // let content = std::fs::read_to_string(&env_path)
-    //     .with_context(|| format!(".env not found at {}", env_path.display()))?;
+    let content = std::fs::read_to_string(&env_path)
+        .with_context(|| format!(".env not found at {}", env_path.display()))?;
     for line in content.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix(key) {
@@ -63,44 +61,51 @@ pub fn read_env_key(key: &str) -> anyhow::Result<String> {
 }
 
 pub fn get_socket() -> anyhow::Result<PathBuf> {
-    let run_path = dirs::runtime_dir().expect("error getting runtime dir");
+    let run_path = dirs::runtime_dir().context("could not determine XDG runtime dir")?;
     Ok(run_path.join(SOCKET_NAME))
 }
 
 fn connect_to_socket() -> anyhow::Result<UnixListener> {
-    let socket_path = get_socket().expect("failed to get socket");
+    let socket_path = get_socket()?;
     if socket_path.exists() {
         std::fs::remove_file(&socket_path).with_context(|| {
             format!("failed to remove stale socket at {}", socket_path.display())
         })?;
     }
 
-    let unix_listener =
-        UnixListener::bind(socket_path.as_path()).expect("Failed to establish unix stream");
+    let unix_listener = UnixListener::bind(socket_path.as_path())
+        .with_context(|| format!("failed to bind unix socket at {}", socket_path.display()))?;
     Ok(unix_listener)
 }
 
 pub async fn run() -> anyhow::Result<()> {
     // 1. establish a universal socket for writing and reading.
-    let unix_stream = connect_to_socket().expect("failed to connect to unix socket");
+    let listener = connect_to_socket().context("failed to set up ipc socket")?;
 
     // 2. run an endless loop that processes the keys pressed.
-    let keyboard_path = read_env_key(KEYBOARD_DEVICE).expect("error reading .env");
+    let keyboard_path = read_env_key(KEYBOARD_DEVICE).context("reading KEYBOARD_DEVICE")?;
     println!("Using device: {}", keyboard_path);
     let mut keyboard_device = Device::open(keyboard_path)?;
     let tracker: Arc<Tracker> = Arc::new(Tracker::new());
     let tracker_write = Arc::clone(&tracker);
     tokio::task::spawn_blocking(move || {
         loop {
-            for event in keyboard_device.fetch_events().unwrap() {
+            let events = match keyboard_device.fetch_events() {
+                Ok(events) => events,
+                Err(e) => {
+                    // TODO: using zbus we could send a notification informing the user that this has failed
+                    // Device read failed (typically unplugged). Log and stop this
+                    // tracker instead of panicking the thread silently.
+                    eprintln!("keyboard: fetch_events failed, stopping tracking: {e}");
+                    break;
+                }
+            };
+            for event in events {
                 if let EventSummary::Key(_ev, key_type, 1) = event.destructure() {
                     let hour_indicator = Local::now().hour() as u8;
                     let key_code = format!("{:?}", KeyCode::new(key_type.code()));
 
-                    let mut tracker_state = tracker_write
-                        .data
-                        .lock()
-                        .expect("unable to get tracker_state mutex lock");
+                    let mut tracker_state = tracker_write.state();
 
                     tracker_state
                         .keyboard_state
@@ -126,13 +131,13 @@ pub async fn run() -> anyhow::Result<()> {
     });
 
     // 3. run an endless loop that process the mouse events.
-    let mouse_path = read_env_key(MOUSE_DEVICE).expect("error reading .env");
+    let mouse_path = read_env_key(MOUSE_DEVICE).context("reading MOUSE_DEVICE")?;
     let mut mouse_device = Device::open(mouse_path)?;
     let tracker_write_2 = Arc::clone(&tracker);
     let mouse_dpi: f64 = read_env_key(MOUSE_DPI)
-        .expect("error reading .env")
+        .context("reading MOUSE_DPI")?
         .parse()
-        .expect("MOUSE_DPI is not a valid number");
+        .context("MOUSE_DPI is not a valid number")?;
     tokio::task::spawn_blocking(move || {
         // AI: evdev delivers one physical mouse report as a burst of REL_X / REL_Y
         // events terminated by a SYN_REPORT. We accumulate the axes of the
@@ -142,13 +147,17 @@ pub async fn run() -> anyhow::Result<()> {
         let mut dx: i32 = 0;
         let mut dy: i32 = 0;
         loop {
-            for event in mouse_device.fetch_events().unwrap() {
+            let events = match mouse_device.fetch_events() {
+                Ok(events) => events,
+                Err(e) => {
+                    eprintln!("mouse: fetch_events failed, stopping tracking: {e}");
+                    break;
+                }
+            };
+            for event in events {
                 match event.destructure() {
                     EventSummary::Key(_ev, key_type, 1) => {
-                        let mut tracker_state = tracker_write_2
-                            .data
-                            .lock()
-                            .expect("unable to get tracker_state mutex lock");
+                        let mut tracker_state = tracker_write_2.state();
                         match key_type {
                             KeyCode::BTN_RIGHT => tracker_state.mouse_state.right_click += 1,
                             KeyCode::BTN_LEFT => tracker_state.mouse_state.left_click += 1,
@@ -160,24 +169,14 @@ pub async fn run() -> anyhow::Result<()> {
                     EventSummary::RelativeAxis(_ev, RelativeAxisCode::REL_X, value) => dx += value,
                     EventSummary::RelativeAxis(_ev, RelativeAxisCode::REL_Y, value) => dy += value,
                     EventSummary::RelativeAxis(_ev, RelativeAxisCode::REL_WHEEL_HI_RES, _) => {
-                        tracker_write_2
-                            .data
-                            .lock()
-                            .expect("unable to get tracker_state mutex lock")
-                            .mouse_state
-                            .mouse_scrolls += 1;
+                        tracker_write_2.state().mouse_state.mouse_scrolls += 1;
                     }
                     // Report boundary: commit one Euclidean segment (in inches
                     // of physical desk travel = raw counts / DPI).
                     EventSummary::Synchronization(_ev, SynchronizationCode::SYN_REPORT, _) => {
                         if dx != 0 || dy != 0 {
                             let inches = (dx as f64).hypot(dy as f64) / mouse_dpi;
-                            tracker_write_2
-                                .data
-                                .lock()
-                                .expect("unable to get tracker_state mutex lock")
-                                .mouse_state
-                                .mouse_inches += inches;
+                            tracker_write_2.state().mouse_state.mouse_inches += inches;
                             dx = 0;
                             dy = 0;
                         }
@@ -215,16 +214,20 @@ pub async fn run() -> anyhow::Result<()> {
     let is_asleep_clone = Arc::clone(&is_asleep);
     tokio::task::spawn(async move {
         while let Some(msg) = new_stream.next().await {
-            let args: PrepareForSleepArgs = msg.args().expect("Error parsing message");
-            let mut status = is_asleep_clone.lock().await;
-            *status = args.status;
+            let parsed: zbus::Result<PrepareForSleepArgs> = msg.args();
+            match parsed {
+                Ok(args) => *is_asleep_clone.lock().await = args.status,
+                // One malformed signal shouldn't tear down sleep tracking.
+                Err(e) => eprintln!("sleep signal: failed to parse args: {e}"),
+            }
         }
     });
 
     // spwan a task that monitors hyprlock status.
     let is_locked_clone = Arc::clone(&is_locked);
-    let xdg_runtime_dir = std::env::var(XDG_RUNTIME).expect("unable to read env");
-    let hypr_instance_signature = std::env::var(HYPR_SIG).expect("unable to read env");
+    let xdg_runtime_dir = std::env::var(XDG_RUNTIME).context("reading $XDG_RUNTIME_DIR")?;
+    let hypr_instance_signature =
+        std::env::var(HYPR_SIG).context("reading $HYPRLAND_INSTANCE_SIGNATURE")?;
     let socket_path = PathBuf::new()
         .join(&xdg_runtime_dir)
         .join("hypr")
@@ -232,7 +235,7 @@ pub async fn run() -> anyhow::Result<()> {
         .join(".socket2.sock");
     let hypr_stream = UnixStream::connect(socket_path.as_path())
         .await
-        .expect("failed to connect to hypr socket");
+        .with_context(|| format!("connecting to hypr socket at {}", socket_path.display()))?;
     let reader = BufReader::new(hypr_stream);
     let mut lines = reader.lines();
     let mut prev_line: Option<String> = None;
@@ -255,12 +258,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     // NOTE: this does not work if hyprlock is actived on an empty workspace with no tabs open
     tokio::task::spawn(async move {
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .expect("reading line by line failed from stream")
-        {
-            println!("line {:?}", line);
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break, // socket closed
+                Err(e) => {
+                    eprintln!("hypr socket: read failed, stopping lock tracking: {e}");
+                    break;
+                }
+            };
             let mut status = is_locked_clone.lock().await;
             if let Some(prev) = &prev_line
                 && prev == "activewindow>>,"
@@ -290,10 +296,7 @@ pub async fn run() -> anyhow::Result<()> {
             );
             if !*is_locked_clone_2.lock().await && !*is_asleep_clone_2.lock().await {
                 let hour_indicator = Local::now().hour() as u8;
-                let mut tracker_state = tracker_write_clone
-                    .data
-                    .lock()
-                    .expect("unable to get tracker_state mutex lock");
+                let mut tracker_state = tracker_write_clone.state();
 
                 tracker_state
                     .display_state
@@ -306,15 +309,19 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 5. handle new connections to this socket.
     loop {
-        let (stream, _addr) = unix_stream
-            .accept()
-            .await
-            .expect("unable to fetch incoming request");
+        let (stream, _addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            // A single failed accept shouldn't bring the whole daemon down.
+            Err(e) => {
+                eprintln!("ipc: failed to accept connection: {e}");
+                continue;
+            }
+        };
         let tracker_read = Arc::clone(&tracker);
         tokio::spawn(async move {
-            handle_request(tracker_read, stream)
-                .await
-                .expect("failed to handle incoming requests");
+            if let Err(e) = handle_request(tracker_read, stream).await {
+                eprintln!("ipc: failed to handle request: {e:#}");
+            }
         });
     }
     // Ok(())
@@ -376,7 +383,7 @@ async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Re
         "Read" => {
             // Scope the lock so the guard is dropped before the .await writes.
             let serialized = {
-                let state = tracker.data.lock().expect("tracker mutex poisoned").clone();
+                let state = tracker.state().clone();
                 serde_json::to_string(&state).context("serializing tracker state")?
             };
             writer
@@ -390,7 +397,7 @@ async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Re
             writer.flush().await.context("flushing response")?;
         }
         "Reset" => {
-            tracker.data.lock().expect("tracker mutex poisoned").reset();
+            tracker.state().reset();
         }
         other => bail!("unknown command {other:?}"),
     }

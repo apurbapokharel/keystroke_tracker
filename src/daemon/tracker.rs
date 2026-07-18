@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -52,6 +53,18 @@ impl Tracker {
         Tracker {
             data: Mutex::new(TrackerState::new()),
         }
+    }
+
+    /// Lock the shared state, recovering from a poisoned mutex.
+    ///
+    /// A poisoned lock only means some *other* thread panicked while holding the
+    /// guard — the counters themselves are still coherent. For a long-running
+    /// daemon it is better to keep tracking than to let one thread's panic
+    /// cascade into every other thread via `.expect()`.
+    pub fn state(&self) -> std::sync::MutexGuard<'_, TrackerState> {
+        self.data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -130,13 +143,15 @@ impl TrackerState {
     pub fn export_to_json(&self, path: &PathBuf, create_dir: bool) -> anyhow::Result<()> {
         if create_dir {
             // create the directories
-            std::fs::create_dir_all(path).expect("failed to create directories");
+            std::fs::create_dir_all(path)
+                .with_context(|| format!("failed to create {}", path.display()))?;
         }
         // serizlize tracker_state to string
-        let serialized = serde_json::to_string(self).expect("unable to serialize tracker_state");
+        let serialized = serde_json::to_string(self).context("unable to serialize tracker_state")?;
         // save the serialized string to .json
-        fs::write(path.join("keystrokes.json"), serialized)
-            .expect("failed to write tracker_state into keystores.json");
+        let out = path.join("keystrokes.json");
+        fs::write(&out, serialized)
+            .with_context(|| format!("failed to write {}", out.display()))?;
         Ok(())
     }
 }

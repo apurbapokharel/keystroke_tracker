@@ -3,6 +3,7 @@ mod daemon;
 mod ipc;
 
 use crate::daemon::tracker::TrackerState;
+use anyhow::Context;
 use anyhow::Ok;
 use chrono::Local;
 use clap::Parser;
@@ -25,33 +26,35 @@ async fn main() -> anyhow::Result<()> {
     let parsed_command = Args::parse();
     match parsed_command.get {
         TrackerCLI::Daemon => {
-            daemon::run().await.expect("daemon failed to run");
+            daemon::run().await.context("daemon exited with error")?;
         }
         TrackerCLI::Status => {
-            let tracker_state = get_status().await.expect("get_status failed");
+            let tracker_state = get_status().await?;
             tracker_state.display();
         }
         TrackerCLI::Init => {
             println!("Init");
-            let url = read_env_key(URL).expect("unable to read URL=");
+            let url = read_env_key(URL)?;
             if !url.starts_with("git@") && !url.starts_with("https://") {
                 anyhow::bail!("URL must start with 'git@' or 'https://'")
             }
-            let git_dir_str = read_env_key(GIT_DIR).expect("unable to read GIT_DIR=");
-            let home_dir = dirs::home_dir().expect("failed to get home dir");
+            let git_dir_str = read_env_key(GIT_DIR)?;
+            let home_dir = dirs::home_dir().context("failed to get home dir")?;
             let git_dir = home_dir.join(&git_dir_str);
 
             if git_dir.is_dir() {
                 println!("tracker/ folder already exists removing it now");
-                std::fs::remove_dir_all(&git_dir).expect("failed to delete /tracker");
+                std::fs::remove_dir_all(&git_dir)
+                    .with_context(|| format!("failed to delete {}", git_dir.display()))?;
             }
-            std::fs::create_dir_all(&git_dir).expect("failed to create tracker directory");
+            std::fs::create_dir_all(&git_dir)
+                .with_context(|| format!("failed to create {}", git_dir.display()))?;
 
             std::fs::write(git_dir.join(".gitignore"), ".env\n*.log\n")
-                .expect("failed to write .gitignore");
+                .context("failed to write .gitignore")?;
 
             let data_dir = git_dir.join("data");
-            std::fs::create_dir_all(&data_dir).expect("failed to create data/ directory");
+            std::fs::create_dir_all(&data_dir).context("failed to create data/ directory")?;
 
             Command::new("git")
                 .arg("init")
@@ -79,10 +82,10 @@ async fn main() -> anyhow::Result<()> {
                 .status()?;
         }
         TrackerCLI::Pull => {
-            let home_dir = dirs::home_dir().expect("failed to get home dir");
-            let git_dir_str = read_env_key(GIT_DIR).expect("unable to read GIT_DIR=");
+            let home_dir = dirs::home_dir().context("failed to get home dir")?;
+            let git_dir_str = read_env_key(GIT_DIR)?;
             let git_dir = home_dir.join(&git_dir_str);
-            pull_repo(&git_dir).expect("pull failed");
+            pull_repo(&git_dir)?;
         }
         //TODO: need to handle the target
         TrackerCLI::Reconfigure { target } => {
@@ -92,8 +95,8 @@ async fn main() -> anyhow::Result<()> {
         TrackerCLI::Push => {
             println!("Push");
             //1. read contents from .env.
-            let home_dir = dirs::home_dir().expect("failed to get home dir");
-            let git_dir_str = read_env_key(GIT_DIR).expect("unable to read GIT_DIR=");
+            let home_dir = dirs::home_dir().context("failed to get home dir")?;
+            let git_dir_str = read_env_key(GIT_DIR)?;
             let git_dir = home_dir.join(&git_dir_str);
 
             let date = Local::now().format("%Y-%m-%d").to_string();
@@ -105,31 +108,25 @@ async fn main() -> anyhow::Result<()> {
             let git_dir_model = git_dir.join("data").join(date).join(model);
 
             //2. always pull before pushing
-            pull_repo(&git_dir).expect("pull before push failed");
+            pull_repo(&git_dir).context("pull before push failed")?;
 
             //3. get Status
-            let tracker_state = get_status().await.expect("get_status failed");
+            let tracker_state = get_status().await?;
 
             //4. read the current json inside git_dir
             //4.1 if no json then export current state (tracker_state) to json
             if !git_dir_model.join("keystrokes.json").exists() {
-                tracker_state
-                    .export_to_json(&git_dir_model, true)
-                    .expect("export to json failed");
+                tracker_state.export_to_json(&git_dir_model, true)?;
             }
             // 4.2 else add the stored state with current state (tracker_state) and export new added json (which is also export_to_json with same file name)
             else {
                 let stored_state_string = fs::read_to_string(git_dir_model.join("keystrokes.json"))
-                    .expect("failed to read keystrokes.json to string");
+                    .context("failed to read keystrokes.json")?;
                 let mut stored_tracker_state: TrackerState =
                     serde_json::from_str(&stored_state_string)
-                        .expect("failed to create TrackerState struct from string");
-                stored_tracker_state
-                    .add_jsons(&tracker_state)
-                    .expect("failed to update current TrackerState");
-                stored_tracker_state
-                    .export_to_json(&git_dir_model, false)
-                    .expect("export to json failed");
+                        .context("failed to parse stored keystrokes.json")?;
+                stored_tracker_state.add_jsons(&tracker_state)?;
+                stored_tracker_state.export_to_json(&git_dir_model, false)?;
             }
 
             //5. push
@@ -150,10 +147,10 @@ async fn main() -> anyhow::Result<()> {
                 .args(["push", "-u", "origin", "main"])
                 .current_dir(&git_dir)
                 .status()
-                .expect("gir push failed");
+                .context("git push failed")?;
 
             //6. reset TrackerState after successfull push
-            reset_tracker().await.expect("unable to reset tracker");
+            reset_tracker().await.context("unable to reset tracker")?;
         }
         TrackerCLI::Test => {
             println!("nothing dummy called");
@@ -181,36 +178,36 @@ async fn send_command(writer: &mut OwnedWriteHalf, action: &str) -> anyhow::Resu
     let command = IPCCommand {
         action: action.to_string(),
     };
-    let payload = serde_json::to_vec(&command).expect("failed to serialize IPCCommand");
+    let payload = serde_json::to_vec(&command).context("failed to serialize IPCCommand")?;
     writer
         .write_all(&(payload.len() as u32).to_le_bytes())
         .await
-        .expect("failed to write length prefix");
+        .context("failed to write length prefix")?;
     writer
         .write_all(&payload)
         .await
-        .expect("failed to write command body");
-    writer.flush().await.expect("failed to flush command");
+        .context("failed to write command body")?;
+    writer.flush().await.context("failed to flush command")?;
     Ok(())
 }
 
 async fn reset_tracker() -> anyhow::Result<()> {
-    ensure_daemon_running().await.expect("daemon failed to run");
-    let socket_path = get_socket().expect("failed to get socket");
+    ensure_daemon_running().await?;
+    let socket_path = get_socket()?;
     let stream = UnixStream::connect(socket_path.as_path())
         .await
-        .expect("failed to connect to socket");
+        .with_context(|| format!("failed to connect to socket at {}", socket_path.display()))?;
     let (_reader, mut writer) = stream.into_split();
     send_command(&mut writer, "Reset").await?;
     Ok(())
 }
 
 async fn get_status() -> anyhow::Result<TrackerState> {
-    ensure_daemon_running().await.expect("daemon failed to run");
-    let socket_path = get_socket().expect("failed to get socket");
+    ensure_daemon_running().await?;
+    let socket_path = get_socket()?;
     let stream = UnixStream::connect(socket_path.as_path())
         .await
-        .expect("failed to connect to socket");
+        .with_context(|| format!("failed to connect to socket at {}", socket_path.display()))?;
     let (mut reader, mut writer) = stream.into_split();
     // request the status
     send_command(&mut writer, "Read").await?;
@@ -219,17 +216,17 @@ async fn get_status() -> anyhow::Result<TrackerState> {
     reader
         .read_exact(&mut len_buf)
         .await
-        .expect("failed to read length prefix");
+        .context("failed to read response length prefix")?;
 
     let len = u32::from_le_bytes(len_buf) as usize;
     let mut data_buf = vec![0u8; len];
     reader
         .read_exact(&mut data_buf)
         .await
-        .expect("failed to read data");
+        .context("failed to read response body")?;
 
     let tracker_state: TrackerState =
-        serde_json::from_slice(&data_buf).expect("decoding to tracker_state failed");
+        serde_json::from_slice(&data_buf).context("decoding tracker state from response")?;
     Ok(tracker_state)
 }
 
@@ -246,7 +243,7 @@ fn pull_repo(git_dir: &Path) -> anyhow::Result<()> {
         .current_dir(git_dir)
         .output()?;
 
-    let branch = String::from_utf8(output.stdout).expect("invalid utf8 from git");
+    let branch = String::from_utf8(output.stdout).context("invalid utf8 from git")?;
     let branch = branch.trim();
 
     let upstream_status = Command::new("git")
@@ -275,7 +272,7 @@ fn pull_repo(git_dir: &Path) -> anyhow::Result<()> {
 
 async fn ensure_daemon_running() -> anyhow::Result<()> {
     //TODO: can ping to check the connection. I am not doing that, do not feel it's needed.
-    let socket_path = get_socket().expect("failed to get socket");
+    let socket_path = get_socket()?;
     if !socket_path.exists() {
         anyhow::bail!("Socket does not exist. Ensure program is run correctly")
     }
