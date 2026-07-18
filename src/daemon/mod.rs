@@ -47,8 +47,9 @@ fn get_env_path() -> PathBuf {
 
 pub fn read_env_key(key: &str) -> anyhow::Result<String> {
     let env_path = get_env_path();
-    let content = std::fs::read_to_string(&env_path)
-        .unwrap_or_else(|_| panic!(".env not found at {}", env_path.display()));
+    let content = std::fs::read_to_string(&env_path).expect(".env not found");
+    // let content = std::fs::read_to_string(&env_path)
+    //     .with_context(|| format!(".env not found at {}", env_path.display()))?;
     for line in content.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix(key) {
@@ -232,19 +233,34 @@ pub async fn run() -> anyhow::Result<()> {
     let hypr_stream = UnixStream::connect(socket_path.as_path())
         .await
         .expect("failed to connect to hypr socket");
-    // NOTE: this is where reading line by line comes into play,
-    // because i don't know the size of the entire payload and i also don't need to.
-    // jhola also has this same code but since that was all vibes I could never figure why it was used.
     let reader = BufReader::new(hypr_stream);
     let mut lines = reader.lines();
     let mut prev_line: Option<String> = None;
+
+    // NOTE: this is the solution using pgrep but I will stick to using sockets
+    // let is_locked_clone = Arc::clone(&is_locked);
+    // tokio::spawn(async move {
+    //     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    //     loop {
+    //         interval.tick().await;
+    //         let locked = tokio::process::Command::new("pgrep")
+    //             .args(["-x", "hyprlock"])
+    //             .status()
+    //             .await
+    //             .map(|s| s.success())
+    //             .unwrap_or(false);
+    //         *is_locked_clone.lock().await = locked;
+    //     }
+    // });
+
+    // NOTE: this does not work if hyprlock is actived on an empty workspace with no tabs open
     tokio::task::spawn(async move {
         while let Some(line) = lines
             .next_line()
             .await
             .expect("reading line by line failed from stream")
         {
-            // println!("line {:?}", line);
+            println!("line {:?}", line);
             let mut status = is_locked_clone.lock().await;
             if let Some(prev) = &prev_line
                 && prev == "activewindow>>,"
@@ -264,6 +280,7 @@ pub async fn run() -> anyhow::Result<()> {
     let tracker_write_clone = Arc::clone(&tracker);
     tokio::task::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             println!(
@@ -359,11 +376,7 @@ async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Re
         "Read" => {
             // Scope the lock so the guard is dropped before the .await writes.
             let serialized = {
-                let state = tracker
-                    .data
-                    .lock()
-                    .expect("tracker mutex poisoned")
-                    .clone();
+                let state = tracker.data.lock().expect("tracker mutex poisoned").clone();
                 serde_json::to_string(&state).context("serializing tracker state")?
             };
             writer
@@ -377,11 +390,7 @@ async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Re
             writer.flush().await.context("flushing response")?;
         }
         "Reset" => {
-            tracker
-                .data
-                .lock()
-                .expect("tracker mutex poisoned")
-                .reset();
+            tracker.data.lock().expect("tracker mutex poisoned").reset();
         }
         other => bail!("unknown command {other:?}"),
     }
