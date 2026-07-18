@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut stored_tracker_state: TrackerState =
                     serde_json::from_str(&stored_state_string)
                         .context("failed to parse stored keystrokes.json")?;
-                stored_tracker_state.add_jsons(&tracker_state)?;
+                stored_tracker_state.add_jsons(&tracker_state);
                 stored_tracker_state.export_to_json(&git_dir_model, false)?;
             }
 

@@ -5,12 +5,12 @@ use anyhow::bail;
 use chrono::Timelike;
 use chrono::prelude::*;
 use evdev::{Device, EventSummary, KeyCode, RelativeAxisCode, SynchronizationCode};
-use futures_util::lock::Mutex;
 use futures_util::stream::StreamExt;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use zbus::{Connection, proxy};
@@ -107,13 +107,12 @@ pub async fn run() -> anyhow::Result<()> {
 
                     let mut tracker_state = tracker_write.state();
 
-                    tracker_state
+                    *tracker_state
                         .keyboard_state
                         .entry(hour_indicator)
                         .or_default()
                         .entry(key_code)
-                        .and_modify(|count| *count += 1)
-                        .or_insert(1);
+                        .or_insert(0) += 1;
 
                     // println!(
                     //     "Key {:?}, keycode {:?} was pressed {:?}",
@@ -204,8 +203,12 @@ pub async fn run() -> anyhow::Result<()> {
     //better recommendation.
 
     // spwan a task that subscribes to the dbus PrepareToSleep signal using zbus.
-    let is_asleep: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
-    let is_locked: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    // These are plain status flags shared across tasks — an AtomicBool needs no
+    // lock and no `.await` to read or write, so it's both simpler and cheaper
+    // than a mutex. Relaxed ordering is correct: nothing depends on these
+    // becoming visible in step with any other memory.
+    let is_asleep = Arc::new(AtomicBool::new(false));
+    let is_locked = Arc::new(AtomicBool::new(false));
     // refer to https://z-galaxy.github.io/zbus/client.html#signals for this code
     let connection = Connection::system().await?;
     let login_proxy = Login1ManagerProxy::new(&connection).await?;
@@ -216,7 +219,7 @@ pub async fn run() -> anyhow::Result<()> {
         while let Some(msg) = new_stream.next().await {
             let parsed: zbus::Result<PrepareForSleepArgs> = msg.args();
             match parsed {
-                Ok(args) => *is_asleep_clone.lock().await = args.status,
+                Ok(args) => is_asleep_clone.store(args.status, Ordering::Relaxed),
                 // One malformed signal shouldn't tear down sleep tracking.
                 Err(e) => eprintln!("sleep signal: failed to parse args: {e}"),
             }
@@ -252,7 +255,7 @@ pub async fn run() -> anyhow::Result<()> {
     //             .await
     //             .map(|s| s.success())
     //             .unwrap_or(false);
-    //         *is_locked_clone.lock().await = locked;
+    //         is_locked_clone.store(locked, Ordering::Relaxed);
     //     }
     // });
 
@@ -267,15 +270,12 @@ pub async fn run() -> anyhow::Result<()> {
                     break;
                 }
             };
-            let mut status = is_locked_clone.lock().await;
-            if let Some(prev) = &prev_line
-                && prev == "activewindow>>,"
-                && line == "activewindowv2>>"
-            {
-                *status = true;
+            let locked = if let Some(prev) = &prev_line {
+                prev == "activewindow>>," && line == "activewindowv2>>"
             } else {
-                *status = false;
-            }
+                false
+            };
+            is_locked_clone.store(locked, Ordering::Relaxed);
             prev_line = Some(line);
         }
     });
@@ -289,20 +289,14 @@ pub async fn run() -> anyhow::Result<()> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            println!(
-                "lock status is {} and sleep status is {}",
-                *is_locked_clone_2.lock().await,
-                *is_asleep_clone_2.lock().await
-            );
-            if !*is_locked_clone_2.lock().await && !*is_asleep_clone_2.lock().await {
+            let locked = is_locked_clone_2.load(Ordering::Relaxed);
+            let asleep = is_asleep_clone_2.load(Ordering::Relaxed);
+            println!("lock status is {locked} and sleep status is {asleep}");
+            if !locked && !asleep {
                 let hour_indicator = Local::now().hour() as u8;
                 let mut tracker_state = tracker_write_clone.state();
 
-                tracker_state
-                    .display_state
-                    .entry(hour_indicator)
-                    .and_modify(|count| *count += 3)
-                    .or_insert(3);
+                *tracker_state.display_state.entry(hour_indicator).or_insert(0) += 3;
             }
         }
     });

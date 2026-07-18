@@ -1,6 +1,6 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -22,13 +22,15 @@ pub struct TrackerState {
     pub version: u8,
     /// 0 is 12 am .... 24 is 11pm
     /// String is the evdev key name (e.g. "KEY_A", "KEY_SPACE"),
-    /// u32 is times pressed
-    pub keyboard_state: HashMap<u8, HashMap<String, u32>>,
+    /// u32 is times pressed.
+    /// BTreeMap so hours (and keys) iterate in sorted order — deterministic
+    /// `display()` output and stable on-disk JSON key ordering.
+    pub keyboard_state: BTreeMap<u8, BTreeMap<String, u32>>,
     /// mouse_tracks
     pub mouse_state: MouseState,
     /// screen active session
     /// hours to active minute
-    pub display_state: HashMap<u8, u32>,
+    pub display_state: BTreeMap<u8, u32>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -72,16 +74,16 @@ impl TrackerState {
     fn new() -> TrackerState {
         TrackerState {
             version: CURRENT_VERSION,
-            keyboard_state: HashMap::new(),
+            keyboard_state: BTreeMap::new(),
             mouse_state: MouseState::default(),
-            display_state: HashMap::new(),
+            display_state: BTreeMap::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.keyboard_state = HashMap::new();
+        self.keyboard_state = BTreeMap::new();
         self.mouse_state = MouseState::default();
-        self.display_state = HashMap::new();
+        self.display_state = BTreeMap::new();
     }
 
     pub fn display(&self) {
@@ -115,13 +117,12 @@ impl TrackerState {
         println!("  Total screen-on time: {}h {}m {}s", hrs, mins, secs);
     }
 
-    pub fn add_jsons(&mut self, current_state: &TrackerState) -> anyhow::Result<()> {
+    /// Merge another state's counts into this one. Pure in-memory arithmetic —
+    /// nothing here can fail, so it returns `()` rather than a `Result`.
+    pub fn add_jsons(&mut self, current_state: &TrackerState) {
         // adding keyboard_state
         for (hour, inner_map) in &current_state.keyboard_state {
-            let entry = self
-                .keyboard_state
-                .entry(*hour)
-                .or_insert_with(HashMap::new);
+            let entry = self.keyboard_state.entry(*hour).or_default();
             for (key, count) in inner_map {
                 *entry.entry(key.clone()).or_insert(0) += count;
             }
@@ -137,7 +138,6 @@ impl TrackerState {
         for (hour, count) in &current_state.display_state {
             *self.display_state.entry(*hour).or_insert(0) += count;
         }
-        Ok(())
     }
 
     pub fn export_to_json(&self, path: &PathBuf, create_dir: bool) -> anyhow::Result<()> {
@@ -164,7 +164,7 @@ mod tests {
     fn test_my_message_decoder() {
         let mut state = TrackerState::default();
 
-        state.keyboard_state.insert(10, HashMap::new());
+        state.keyboard_state.insert(10, BTreeMap::new());
         state
             .keyboard_state
             .get_mut(&10)
@@ -178,6 +178,5 @@ mod tests {
         }
         let json = serde_json::to_string_pretty(&state.keyboard_state).unwrap();
         println!("json is {:?}", json);
-        assert!(1 == 1, "assertion failed")
     }
 }
