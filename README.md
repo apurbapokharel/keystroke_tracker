@@ -96,6 +96,24 @@ Stored as versioned JSON, keyed by date and machine model:
 Each `push` pulls first, merges the current in-memory session into the existing
 file for that date/machine, pushes, and then resets the live counters.
 
+## Failure notifications
+
+Because the daemon runs in the background, failures are surfaced as desktop
+notifications (via the `org.freedesktop.Notifications` D-Bus service) so a broken
+tracker doesn't go unnoticed:
+
+- **A single input device stops** (e.g. keyboard unplugged) — the daemon keeps
+  running but that tracker thread has stopped. It logs to the journal and raises
+  a notification immediately.
+- **The whole daemon crashes repeatedly** — systemd's `Restart=always` self-heals
+  brief blips silently; only if it crash-loops past the start limit (5 times in
+  5 minutes) does the `tracker-failure-notify.service` `OnFailure=` unit fire a
+  critical notification.
+
+Notifications are best-effort: if no session bus or notification daemon is
+available, the failure is still recorded in the journal
+(`journalctl --user -u tracker.service`).
+
 ## License
 
 MIT

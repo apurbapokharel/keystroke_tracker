@@ -8,6 +8,7 @@ BIN_DIR="$HOME/.local/bin"
 BIN_PATH="$BIN_DIR/tracker"
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_PATH="$SERVICE_DIR/tracker.service"
+NOTIFY_SERVICE_PATH="$SERVICE_DIR/tracker-failure-notify.service"
 
 TRACKER_CONFIG_DIR="$HOME/.config/tracker"
 
@@ -28,6 +29,49 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Write (or overwrite) both systemd user units and reload the daemon so the
+# definitions take effect. Idempotent — safe to call from install and update.
+# Overwrites the main unit file; customize via `systemctl --user edit` drop-ins,
+# which live in a separate .d/ dir and survive this.
+write_systemd_units() {
+    mkdir -p "$SERVICE_DIR"
+
+    cat > "$SERVICE_PATH" <<EOF
+[Unit]
+Description=tracker — keystroke tracker daemon
+After=network.target
+# Fire the notifier when the service gives up restarting (see StartLimit* below).
+OnFailure=tracker-failure-notify.service
+# Restart=always self-heals brief crashes without bothering the user; only after
+# 5 crashes within 5 min does systemd mark the unit "failed" and trigger OnFailure.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+ExecStart=%h/.local/bin/tracker daemon
+WorkingDirectory=%h/.config/tracker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+    # Companion unit: raises a critical desktop notification when tracker fails.
+    # It is a --user unit, so it inherits the session bus and busctl --user can
+    # reach the notification daemon.
+    cat > "$NOTIFY_SERVICE_PATH" <<'EOF'
+[Unit]
+Description=Notify when the tracker daemon fails
+
+[Service]
+Type=oneshot
+ExecStart=busctl --user call org.freedesktop.Notifications /org/freedesktop/Notifications org.freedesktop.Notifications Notify susssasa{sv}i tracker 0 dialog-error "tracker daemon failed" "It stopped and systemd gave up restarting it. Run: systemctl --user status tracker.service" 0 1 urgency y 2 0
+EOF
+
+    systemctl --user daemon-reload
+}
 
 # ------------------------------------------------------------------
 # 1. Input group check
@@ -80,9 +124,11 @@ fi
 info "All prerequisites found."
 
 # ------------------------------------------------------------------
-# 3z. Update mode — rebuild + redeploy binary only (safe to re-run)
-#     Does NOT touch git, the input group, or the systemd unit, so it
-#     never wipes tracked data. Use this after changing the source.
+# 3z. Update mode — rebuild + redeploy binary and refresh units (safe to re-run)
+#     Does NOT touch git or the input group, so it never wipes tracked data.
+#     Re-writes the systemd units (idempotent) so unit changes ship via update.
+#     Use this after changing the source. Overwrites hand-edits to the main unit
+#     (use `systemctl --user edit` drop-ins to customize — those survive).
 # ------------------------------------------------------------------
 if [ "$UPDATE" -eq 1 ]; then
     info "Update mode — rebuilding and redeploying binary..."
@@ -99,6 +145,9 @@ if [ "$UPDATE" -eq 1 ]; then
         cp "$ENV_FILE" "$TRACKER_CONFIG_DIR/.env"
         info "Synced .env to $TRACKER_CONFIG_DIR/.env"
     fi
+
+    info "Refreshing systemd units..."
+    write_systemd_units
 
     info "Restarting tracker.service..."
     systemctl --user restart tracker.service || true
@@ -254,24 +303,7 @@ info "Copied .env to $TRACKER_CONFIG_DIR/.env"
 # ------------------------------------------------------------------
 info "Creating systemd user service..."
 
-mkdir -p "$SERVICE_DIR"
-
-cat > "$SERVICE_PATH" <<EOF
-[Unit]
-Description=tracker — keystroke tracker daemon
-After=network.target
-
-[Service]
-ExecStart=%h/.local/bin/tracker daemon
-WorkingDirectory=%h/.config/tracker
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
+write_systemd_units
 systemctl --user enable --now tracker.service
 
 # ------------------------------------------------------------------

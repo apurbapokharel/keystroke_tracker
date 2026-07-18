@@ -79,16 +79,24 @@ pub async fn run() -> anyhow::Result<()> {
     println!("Using device: {}", keyboard_path);
     let mut keyboard_device = Device::open(keyboard_path)?;
     let tracker: Arc<Tracker> = Arc::new(Tracker::new());
+
+    // Background task that surfaces daemon failures as desktop notifications.
+    // The blocking input threads below cannot `.await`, so they push error
+    // strings through this channel instead of notifying directly.
+    let notifier = spawn_notifier();
+
     let tracker_write = Arc::clone(&tracker);
+    let notifier_kbd = notifier.clone();
     tokio::task::spawn_blocking(move || {
         loop {
             let events = match keyboard_device.fetch_events() {
                 Ok(events) => events,
                 Err(e) => {
-                    // TODO: using zbus we could send a notification informing the user that this has failed
-                    // Device read failed (typically unplugged). Log and stop this
-                    // tracker instead of panicking the thread silently.
-                    eprintln!("keyboard: fetch_events failed, stopping tracking: {e}");
+                    // Device read failed (typically unplugged). Log, notify the
+                    // user, and stop this tracker instead of dying silently.
+                    let msg = format!("keyboard tracking stopped: {e}");
+                    eprintln!("{msg}");
+                    let _ = notifier_kbd.send(msg);
                     break;
                 }
             };
@@ -114,6 +122,7 @@ pub async fn run() -> anyhow::Result<()> {
     let mouse_path = read_env_key(MOUSE_DEVICE).context("reading MOUSE_DEVICE")?;
     let mut mouse_device = Device::open(mouse_path)?;
     let tracker_write_2 = Arc::clone(&tracker);
+    let notifier_mouse = notifier.clone();
     let mouse_dpi: f64 = read_env_key(MOUSE_DPI)
         .context("reading MOUSE_DPI")?
         .parse()
@@ -130,7 +139,9 @@ pub async fn run() -> anyhow::Result<()> {
             let events = match mouse_device.fetch_events() {
                 Ok(events) => events,
                 Err(e) => {
-                    eprintln!("mouse: fetch_events failed, stopping tracking: {e}");
+                    let msg = format!("mouse tracking stopped: {e}");
+                    eprintln!("{msg}");
+                    let _ = notifier_mouse.send(msg);
                     break;
                 }
             };
