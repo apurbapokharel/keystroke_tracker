@@ -1,4 +1,5 @@
 pub mod tracker;
+pub mod zzbus;
 
 use anyhow::Context;
 use anyhow::bail;
@@ -13,10 +14,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use zbus::{Connection, proxy};
+use zbus::Connection;
 
 use crate::cli::ReconfigureTarget;
 use crate::daemon::tracker::Tracker;
+use crate::daemon::zzbus::*;
 use crate::ipc::IPCCommand;
 
 // TODO: change this back to tracker.sock
@@ -26,17 +28,6 @@ const MOUSE_DEVICE: &str = "MOUSE_DEVICE=";
 const MOUSE_DPI: &str = "MOUSE_DPI=";
 const HYPR_SIG: &str = "HYPRLAND_INSTANCE_SIGNATURE";
 const XDG_RUNTIME: &str = "XDG_RUNTIME_DIR";
-
-#[proxy(
-    default_service = "org.freedesktop.login1",
-    default_path = "/org/freedesktop/login1",
-    interface = "org.freedesktop.login1.Manager"
-)]
-trait Login1Manager {
-    // Defines signature for D-Bus signal named `PrepareForSleep`
-    #[zbus(signal)]
-    fn prepare_for_sleep(&self, status: bool);
-}
 
 fn get_env_path() -> PathBuf {
     let config_path = dirs::config_dir()
@@ -114,17 +105,6 @@ pub async fn run() -> anyhow::Result<()> {
                         .or_default()
                         .entry(key_code)
                         .or_insert(0) += 1;
-
-                    // println!(
-                    //     "Key {:?}, keycode {:?} was pressed {:?}",
-                    //     key_type,
-                    //     key_type.code(),
-                    //     tracker_state
-                    //         .keyboard_state
-                    //         .get(&hour_indicator)
-                    //         .and_then(|inner| inner.get(&key_code))
-                    //         .unwrap_or(&0)
-                    // );
                 }
             }
         }
@@ -297,7 +277,10 @@ pub async fn run() -> anyhow::Result<()> {
                 let hour_indicator = Local::now().hour() as u8;
                 let mut tracker_state = tracker_write_clone.state();
 
-                *tracker_state.display_state.entry(hour_indicator).or_insert(0) += 3;
+                *tracker_state
+                    .display_state
+                    .entry(hour_indicator)
+                    .or_insert(0) += 3;
             }
         }
     });
