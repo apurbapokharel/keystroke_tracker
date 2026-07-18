@@ -136,8 +136,9 @@ if [ "$UPDATE" -eq 1 ]; then
 
     info "Installing binary to $BIN_PATH..."
     mkdir -p "$BIN_DIR"
-    cp "$PROJECT_DIR/target/release/tracker" "$BIN_PATH"
-    chmod +x "$BIN_PATH"
+    cp "$PROJECT_DIR/target/release/tracker" "$BIN_PATH.new"
+    chmod +x "$BIN_PATH.new"
+    mv -f "$BIN_PATH.new" "$BIN_PATH"
 
     # Keep the daemon's copy of .env in sync in case keys changed.
     if [ -f "$ENV_FILE" ]; then
