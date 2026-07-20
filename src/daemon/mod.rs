@@ -201,7 +201,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // spwan a task that subscribes to the dbus PrepareToSleep signal using zbus.
     // These are plain status flags shared across tasks — an AtomicBool needs no
-    // lock and no `.await` to read or write, so it's both simpler and cheaper than a mutex. 
+    // lock and no `.await` to read or write, so it's both simpler and cheaper than a mutex.
     let is_asleep = Arc::new(AtomicBool::new(false));
     let is_locked = Arc::new(AtomicBool::new(false));
     // refer to https://z-galaxy.github.io/zbus/client.html#signals for this code
@@ -221,10 +221,10 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
-    // Track lock state with a backend chosen at runtime. hyprlock or events from
-    // LockedHint
-    // If neither can be set up we log and carry on — active time then
-    // counts sleep-only rather than taking the whole daemon down. 
+    // Track lock state with a backend chosen at runtime: Hyprland's event socket
+    // (hyprlock doesn't report to logind) or logind's LockedHint everywhere else.
+    // If neither can be set up we log and carry on — active time then counts
+    // sleep-only rather than taking the whole daemon down.
     if std::env::var(HYPR_SIG).is_ok() {
         if let Err(e) = spawn_hypr_lock_task(Arc::clone(&is_locked)).await {
             eprintln!("lock: hyprland backend failed: {e:#}; active time = sleep-only");
@@ -244,7 +244,6 @@ pub async fn run() -> anyhow::Result<()> {
             interval.tick().await;
             let locked = is_locked_clone_2.load(Ordering::Relaxed);
             let asleep = is_asleep_clone_2.load(Ordering::Relaxed);
-            println!("lock status is {locked} and sleep status is {asleep}");
             if !locked && !asleep {
                 let hour_indicator = Local::now().hour() as u8;
                 let mut tracker_state = tracker_write_clone.state();
@@ -363,7 +362,7 @@ async fn resolve_session(
             return Ok(path);
         }
     }
-    anyhow::bail!("no graphical session found for uid {my_uid}");
+    bail!("no graphical session found for uid {my_uid}");
 }
 
 /// logind lock backend for non-Hyprland desktops: watch the per-session
