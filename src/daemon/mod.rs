@@ -28,6 +28,7 @@ const MOUSE_DEVICE: &str = "MOUSE_DEVICE=";
 const MOUSE_DPI: &str = "MOUSE_DPI=";
 const HYPR_SIG: &str = "HYPRLAND_INSTANCE_SIGNATURE";
 const XDG_RUNTIME: &str = "XDG_RUNTIME_DIR";
+const XDG_SESSION_ID: &str = "XDG_SESSION_ID";
 
 fn get_env_path() -> PathBuf {
     let config_path = dirs::config_dir()
@@ -218,59 +219,19 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
-    // spwan a task that monitors hyprlock status.
-    let is_locked_clone = Arc::clone(&is_locked);
-    let xdg_runtime_dir = std::env::var(XDG_RUNTIME).context("reading $XDG_RUNTIME_DIR")?;
-    let hypr_instance_signature =
-        std::env::var(HYPR_SIG).context("reading $HYPRLAND_INSTANCE_SIGNATURE")?;
-    let socket_path = PathBuf::new()
-        .join(&xdg_runtime_dir)
-        .join("hypr")
-        .join(&hypr_instance_signature)
-        .join(".socket2.sock");
-    let hypr_stream = UnixStream::connect(socket_path.as_path())
-        .await
-        .with_context(|| format!("connecting to hypr socket at {}", socket_path.display()))?;
-    let reader = BufReader::new(hypr_stream);
-    let mut lines = reader.lines();
-    let mut prev_line: Option<String> = None;
-
-    // NOTE: this is the solution using pgrep but I will stick to using sockets
-    // let is_locked_clone = Arc::clone(&is_locked);
-    // tokio::spawn(async move {
-    //     let mut interval = tokio::time::interval(Duration::from_secs(1));
-    //     loop {
-    //         interval.tick().await;
-    //         let locked = tokio::process::Command::new("pgrep")
-    //             .args(["-x", "hyprlock"])
-    //             .status()
-    //             .await
-    //             .map(|s| s.success())
-    //             .unwrap_or(false);
-    //         is_locked_clone.store(locked, Ordering::Relaxed);
-    //     }
-    // });
-
-    // NOTE: this does not work if hyprlock is actived on an empty workspace with no tabs open
-    tokio::task::spawn(async move {
-        loop {
-            let line = match lines.next_line().await {
-                Ok(Some(line)) => line,
-                Ok(None) => break, // socket closed
-                Err(e) => {
-                    eprintln!("hypr socket: read failed, stopping lock tracking: {e}");
-                    break;
-                }
-            };
-            let locked = if let Some(prev) = &prev_line {
-                prev == "activewindow>>," && line == "activewindowv2>>"
-            } else {
-                false
-            };
-            is_locked_clone.store(locked, Ordering::Relaxed);
-            prev_line = Some(line);
+    // Track lock state with a backend chosen at runtime. hyprlock doesn't report
+    // to logind, so on Hyprland we sniff the compositor's event socket; 
+    // For other desktop (GNOME/KDE/…) CODE ASSUMES that lock events reports `LockedHint` to logind, 
+    // which we watch instead. 
+    // If neither can be set up we log and carry on — active time then
+    // counts sleep-only rather than taking the whole daemon down. 
+    if std::env::var(HYPR_SIG).is_ok() {
+        if let Err(e) = spawn_hypr_lock_task(Arc::clone(&is_locked)).await {
+            eprintln!("lock: hyprland backend failed: {e:#}; active time = sleep-only");
         }
-    });
+    } else if let Err(e) = spawn_logind_lock_task(&connection, Arc::clone(&is_locked)).await {
+        eprintln!("lock: logind backend failed: {e:#}; active time = sleep-only");
+    }
 
     // timer to increment counter iff  both true
     let is_locked_clone_2 = Arc::clone(&is_locked);
@@ -314,6 +275,96 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
     // Ok(())
+}
+
+/// Hyprland lock backend: watch the compositor's event socket (`.socket2.sock`).
+/// hyprlock doesn't flip logind's `LockedHint`, so lock state has to come from
+/// Hyprland's own event stream. Errors are returned to the caller (which logs
+/// and degrades to sleep-only) rather than aborting the daemon.
+async fn spawn_hypr_lock_task(is_locked: Arc<AtomicBool>) -> anyhow::Result<()> {
+    let xdg_runtime_dir = std::env::var(XDG_RUNTIME).context("reading $XDG_RUNTIME_DIR")?;
+    let hypr_instance_signature =
+        std::env::var(HYPR_SIG).context("reading $HYPRLAND_INSTANCE_SIGNATURE")?;
+    let socket_path = PathBuf::new()
+        .join(&xdg_runtime_dir)
+        .join("hypr")
+        .join(&hypr_instance_signature)
+        .join(".socket2.sock");
+    let hypr_stream = UnixStream::connect(socket_path.as_path())
+        .await
+        .with_context(|| format!("connecting to hypr socket at {}", socket_path.display()))?;
+    let reader = BufReader::new(hypr_stream);
+    let mut lines = reader.lines();
+    let mut prev_line: Option<String> = None;
+
+    // NOTE: the alternative was polling `pgrep -x hyprlock` on an interval, but
+    // sniffing the socket is event-driven and cheaper.
+    // NOTE: this does not work if hyprlock is actived on an empty workspace with no tabs open
+    tokio::task::spawn(async move {
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break, // socket closed
+                Err(e) => {
+                    eprintln!("hypr socket: read failed, stopping lock tracking: {e}");
+                    break;
+                }
+            };
+            let locked = if let Some(prev) = &prev_line {
+                prev == "activewindow>>," && line == "activewindowv2>>"
+            } else {
+                false
+            };
+            is_locked.store(locked, Ordering::Relaxed);
+            prev_line = Some(line);
+        }
+    });
+    Ok(())
+}
+
+/// logind lock backend for non-Hyprland desktops: watch the per-session
+/// `LockedHint` property. A conforming locker flips it on lock/unlock (and it
+/// also flips on sleep), which logind surfaces as `PropertiesChanged`. Reuses
+/// the daemon's existing system-bus connection.
+async fn spawn_logind_lock_task(
+    connection: &Connection,
+    is_locked: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let manager = Login1ManagerProxy::new(connection).await?;
+    // Prefer the graphical session we were launched under (its id is inherited
+    // via $XDG_SESSION_ID); otherwise fall back to whichever session owns this
+    // process.
+    let session_path = match std::env::var(XDG_SESSION_ID) {
+        Ok(id) if !id.is_empty() => manager
+            .get_session(&id)
+            .await
+            .with_context(|| format!("resolving session id {id}"))?,
+        _ => manager
+            .get_session_by_pid(std::process::id())
+            .await
+            .context("resolving session by pid")?,
+    };
+
+    let session = Login1SessionProxy::builder(connection)
+        .path(session_path.clone())?
+        .build()
+        .await
+        .with_context(|| format!("building session proxy at {}", session_path.as_str()))?;
+
+    // Seed the current state before streaming changes, so a daemon started while
+    // already locked doesn't count that time as active.
+    is_locked.store(session.locked_hint().await?, Ordering::Relaxed);
+
+    tokio::task::spawn(async move {
+        let mut changes = session.receive_locked_hint_changed().await;
+        while let Some(change) = changes.next().await {
+            match change.get().await {
+                Ok(locked) => is_locked.store(locked, Ordering::Relaxed),
+                Err(e) => eprintln!("lock: failed to read LockedHint change: {e}"),
+            }
+        }
+    });
+    Ok(())
 }
 
 fn run_setup_script(project_dir: &str, script_name: &str, label: &str) -> anyhow::Result<()> {

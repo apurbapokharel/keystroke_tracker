@@ -11,6 +11,29 @@ pub trait Login1Manager {
     // Defines signature for D-Bus signal named `PrepareForSleep`
     #[zbus(signal)]
     fn prepare_for_sleep(&self, status: bool);
+
+    /// Resolve a session id (e.g. `$XDG_SESSION_ID`) to its object path.
+    fn get_session(&self, session_id: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
+    /// Resolve a pid to the object path of the session it belongs to.
+    #[zbus(name = "GetSessionByPID")]
+    fn get_session_by_pid(&self, pid: u32) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+}
+
+/// Per-session proxy. Path is supplied at build time (there's no single fixed
+/// session path), so no `default_path` here.
+///
+/// On non-Hyprland desktops a well-behaved locker reports lock state to logind,
+/// which flips `LockedHint` and emits `PropertiesChanged`. zbus generates
+/// `receive_locked_hint_changed()` from the property below — that's the stream
+/// we drive the non-Hyprland lock backend off of.
+#[proxy(
+    default_service = "org.freedesktop.login1",
+    interface = "org.freedesktop.login1.Session"
+)]
+pub trait Login1Session {
+    #[zbus(property)]
+    fn locked_hint(&self) -> zbus::Result<bool>;
 }
 
 #[proxy(
