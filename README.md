@@ -19,8 +19,23 @@ typed text. You cannot reconstruct what was typed from the data.
 ## Supported OS
 
 Linux (Wayland and X11). Reads input devices directly — no display server
-dependencies. Active-session (lock) detection is currently Hyprland-specific;
-sleep detection uses the standard `org.freedesktop.login1` D-Bus signal.
+dependencies.
+
+**Active-session (lock) detection** picks a backend at runtime:
+
+- **Hyprland** — watches the Hyprland event socket (hyprlock doesn't report to
+  logind, so lock state has to come from the compositor).
+- **Ubuntu / GNOME and other logind desktops** — watches the per-session
+  `LockedHint` property on `org.freedesktop.login1`. On GNOME, make sure the
+  screensaver lock is enabled so `LockedHint` actually flips:
+  ```bash
+  gsettings set org.gnome.desktop.screensaver lock-enabled true
+  ```
+- **Anything else** — if no lock backend can be set up, the daemon logs and keeps
+  running; active time then falls back to sleep-only rather than crashing.
+
+**Sleep detection** uses the standard `org.freedesktop.login1` `PrepareForSleep`
+D-Bus signal on every desktop.
 
 ## Prerequisites
 
