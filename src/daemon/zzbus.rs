@@ -18,6 +18,20 @@ pub trait Login1Manager {
     /// Resolve a pid to the object path of the session it belongs to.
     #[zbus(name = "GetSessionByPID")]
     fn get_session_by_pid(&self, pid: u32) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
+    /// List all current sessions. Returns (id, uid, user_name, seat_id, object_path).
+    #[zbus(name = "ListSessions")]
+    fn list_sessions(
+        &self,
+    ) -> zbus::Result<
+        Vec<(
+            String,
+            u32,
+            String,
+            String,
+            zbus::zvariant::OwnedObjectPath,
+        )>,
+    >;
 }
 
 /// Per-session proxy. Path is supplied at build time (there's no single fixed

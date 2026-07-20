@@ -8,6 +8,7 @@ use chrono::prelude::*;
 use evdev::{Device, EventSummary, KeyCode, RelativeAxisCode, SynchronizationCode};
 use futures_util::stream::StreamExt;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -21,8 +22,7 @@ use crate::daemon::tracker::Tracker;
 use crate::daemon::zzbus::*;
 use crate::ipc::IPCCommand;
 
-// TODO: change this back to tracker.sock
-const SOCKET_NAME: &str = "temptracker.sock";
+const SOCKET_NAME: &str = "tracker.sock";
 const KEYBOARD_DEVICE: &str = "KEYBOARD_DEVICE=";
 const MOUSE_DEVICE: &str = "MOUSE_DEVICE=";
 const MOUSE_DPI: &str = "MOUSE_DPI=";
@@ -81,9 +81,12 @@ pub async fn run() -> anyhow::Result<()> {
     let mut keyboard_device = Device::open(keyboard_path)?;
     let tracker: Arc<Tracker> = Arc::new(Tracker::new());
 
-    // Background task that surfaces daemon failures as desktop notifications.
-    // The blocking input threads below cannot `.await`, so they push error
-    // strings through this channel instead of notifying directly.
+    // 2.5. Background task that surfaces daemon failures as desktop notifications.
+    // The keyboard and mouse events are non async since it's  a blocking event which 
+    // is a future in itself. 
+    // We need a way to inform dbus notification in a non-aysnc event 
+    // The way to do this in rust is to use an unbounded channel:
+    // this channel accepts messaged in synchronous fashion and consumes them asynchronously.
     let notifier = spawn_notifier();
 
     let tracker_write = Arc::clone(&tracker);
@@ -182,24 +185,23 @@ pub async fn run() -> anyhow::Result<()> {
     // 4. run a seperate task that tracks the active scesion time.
     //NOTE: this is very very complicated than i thought it would be.
     //1. i use hyperland. and in order to detect sleep i can subscribe to dbus signal PrepareToSleep
-    //2. figuring this out was no easy task, even with constant mentoring for ai it took me long to
-    //   undertand all of this.
-    //3. no 2) just solves sleep problem but what if we lock without sleeping that should also not
-    //   be counted as a active time.
+    //2. also need to non increase on locked
     //4. this is where hyperland bites back, hyperland uses hyprlock which does not throw the
     //   underlying dbus's LockedHint signal so that does not change on lock and hence it does not help.
     //5. the work around has two options and this is all mentoring of AI i would not be able to figure this out in
     //   this little time,
     //5.1 use pgrep -x hyprlock to see how it works if needed: while true; do pgrep -x hyprlock; echo "---"; sleep 1; done
-    //5.2 monitor hyperland socket
-    //So, this is my implementation idea so far. Will run this through claude and see if i get
-    //better recommendation.
+    //5.2.1 on hyperland use : monitor hyperland socket
+    //5.2.2 on ubuntu/gnome : 
+    // - ensure lockedhint is change on lock/unlock
+    // - use that to detect lock/unlock
+    // - use to ensure lockedHint is triggered:
+    // gsettings set org.gnome.desktop.screensaver lock-enabled true
+    // gsettings get org.gnome.desktop.screensaver lock-enabled
 
     // spwan a task that subscribes to the dbus PrepareToSleep signal using zbus.
     // These are plain status flags shared across tasks — an AtomicBool needs no
-    // lock and no `.await` to read or write, so it's both simpler and cheaper
-    // than a mutex. Relaxed ordering is correct: nothing depends on these
-    // becoming visible in step with any other memory.
+    // lock and no `.await` to read or write, so it's both simpler and cheaper than a mutex. 
     let is_asleep = Arc::new(AtomicBool::new(false));
     let is_locked = Arc::new(AtomicBool::new(false));
     // refer to https://z-galaxy.github.io/zbus/client.html#signals for this code
@@ -219,10 +221,8 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
-    // Track lock state with a backend chosen at runtime. hyprlock doesn't report
-    // to logind, so on Hyprland we sniff the compositor's event socket; 
-    // For other desktop (GNOME/KDE/…) CODE ASSUMES that lock events reports `LockedHint` to logind, 
-    // which we watch instead. 
+    // Track lock state with a backend chosen at runtime. hyprlock or events from
+    // LockedHint
     // If neither can be set up we log and carry on — active time then
     // counts sleep-only rather than taking the whole daemon down. 
     if std::env::var(HYPR_SIG).is_ok() {
@@ -299,7 +299,7 @@ async fn spawn_hypr_lock_task(is_locked: Arc<AtomicBool>) -> anyhow::Result<()> 
 
     // NOTE: the alternative was polling `pgrep -x hyprlock` on an interval, but
     // sniffing the socket is event-driven and cheaper.
-    // NOTE: this does not work if hyprlock is actived on an empty workspace with no tabs open
+    // NOTE: this does not work if screen is locked (hyprlock is actived) on an empty workspace with no tabs open
     tokio::task::spawn(async move {
         loop {
             let line = match lines.next_line().await {
@@ -322,6 +322,50 @@ async fn spawn_hypr_lock_task(is_locked: Arc<AtomicBool>) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Resolve the user's graphical logind session.
+///
+/// Tries (in order):
+///   1. `$XDG_SESSION_ID` — set by the display manager for login sessions.
+///   2. `GetSessionByPID` — works when the daemon inherits the session (e.g.
+///      launched from a terminal). Fails for systemd user services because they
+///      are *not* part of any login session.
+///   3. `ListSessions` — scans all sessions and picks the first one that
+///      belongs to the calling user and has a seat (i.e. a graphical session).
+async fn resolve_session(
+    manager: &Login1ManagerProxy<'_>,
+) -> anyhow::Result<zbus::zvariant::OwnedObjectPath> {
+    // 1. Explicit session id from the environment.
+    if let Ok(id) = std::env::var(XDG_SESSION_ID) {
+        if !id.is_empty() {
+            return manager
+                .get_session(&id)
+                .await
+                .with_context(|| format!("resolving session id {id}"));
+        }
+    }
+
+    // 2. Session that owns this process (works when launched from a terminal).
+    if let Ok(path) = manager.get_session_by_pid(std::process::id()).await {
+        return Ok(path);
+    }
+
+    // 3. Fall back: find the active graphical session for this user.
+    let my_uid: u32 = std::fs::metadata("/proc/self")
+        .context("reading /proc/self metadata")?
+        .uid();
+    let sessions = manager
+        .list_sessions()
+        .await
+        .context("listing logind sessions")?;
+    for (id, uid, _user, seat, path) in sessions {
+        if uid == my_uid && !seat.is_empty() {
+            eprintln!("lock: resolved session {id:?} (seat {seat:?}) via ListSessions fallback");
+            return Ok(path);
+        }
+    }
+    anyhow::bail!("no graphical session found for uid {my_uid}");
+}
+
 /// logind lock backend for non-Hyprland desktops: watch the per-session
 /// `LockedHint` property. A conforming locker flips it on lock/unlock (and it
 /// also flips on sleep), which logind surfaces as `PropertiesChanged`. Reuses
@@ -331,19 +375,7 @@ async fn spawn_logind_lock_task(
     is_locked: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let manager = Login1ManagerProxy::new(connection).await?;
-    // Prefer the graphical session we were launched under (its id is inherited
-    // via $XDG_SESSION_ID); otherwise fall back to whichever session owns this
-    // process.
-    let session_path = match std::env::var(XDG_SESSION_ID) {
-        Ok(id) if !id.is_empty() => manager
-            .get_session(&id)
-            .await
-            .with_context(|| format!("resolving session id {id}"))?,
-        _ => manager
-            .get_session_by_pid(std::process::id())
-            .await
-            .context("resolving session by pid")?,
-    };
+    let session_path = resolve_session(&manager).await?;
 
     let session = Login1SessionProxy::builder(connection)
         .path(session_path.clone())?
