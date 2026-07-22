@@ -80,11 +80,29 @@ of these flags — with no flag it performs a full first-time install.
 ## Usage
 
 ```
-tracker status        — view current keystroke / mouse / active-time counts
-tracker push          — aggregate the current session into JSON and push to GitHub
-tracker pull          — pull the latest data from GitHub
-tracker reconfigure   — re-run device setup, then restart the service
+tracker status             — summary table of everything not yet pushed
+tracker status --detailed  — per-hour and per-key breakdown (-d)
+tracker push               — aggregate the current session into JSON and push to GitHub
+tracker pull               — pull the latest data from GitHub
+tracker reconfigure        — re-run device setup, then restart the service
 ```
+
+`status` reports **live daemon state only** — one row per date that has not been
+pushed yet, oldest first. Anything above today is a day that was tracked but
+never pushed. History that has already been pushed lives in the data repo and is
+what the dashboard reads.
+
+```
+DATE          KEYS  CLICKS   INCHES  SCROLLS   ACTIVE
+2026-07-20  12,431   2,104  1,204.5      883   6h 12m
+2026-07-21   8,002   1,551    893.1      402    4h 3m
+-----------------------------------------------------
+TOTAL       20,433   3,655  2,097.6    1,285  10h 15m
+```
+
+Columns size themselves to the widest value, so the table stays aligned however
+large the numbers get. The TOTAL row is omitted when there is only one date —
+it would just repeat it.
 
 `tracker init` (initialize the git repo) and `tracker daemon` (the background
 process) are run for you by `install.sh` and the systemd service — you should
@@ -108,8 +126,25 @@ Stored as versioned JSON, keyed by date and machine model:
 ~/.local/state/tracker_data/data/{YYYY-MM-DD}/{machine-model}/keystrokes.json
 ```
 
-Each `push` pulls first, merges the current in-memory session into the existing
-file for that date/machine, pushes, and then resets the live counters.
+The daemon keeps **one set of counters per calendar date**, not one running
+total. Every event is filed under the date it happened on, so forgetting to push
+before midnight no longer folds yesterday's activity into today — each day still
+lands in its own file whenever you get around to pushing.
+
+Each `push` pulls first, then merges every unpushed date into that date's file
+(creating it if absent), commits them all as one commit, pushes, and resets the
+live counters.
+
+If a push fails part-way — a file it cannot write, a rejected commit — the data
+repo is rolled back to the last commit before anything is reset. Without that,
+the counters would still be in memory *and* half-written to disk, and the next
+push would count them twice. A failure at the network step is different: the
+commit already exists locally, so the counters are cleared and the next push
+carries that commit along.
+
+Because the counters live in memory, a reboot or a `systemctl --user restart`
+drops whatever has not been pushed. **Run `tracker push` before updating or
+rebooting** if you care about the current session.
 
 ## Failure notifications
 

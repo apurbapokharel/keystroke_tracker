@@ -96,35 +96,38 @@ impl Default for TrackerState {
 }
 
 impl TrackerState {
-    pub fn display(&self) {
-        println!("=== Tracker State (version {}) ===", self.version);
+    /// Total key presses across every hour.
+    pub fn total_keys(&self) -> u64 {
+        self.keyboard_state
+            .values()
+            .flat_map(|keys| keys.values())
+            .map(|count| *count as u64)
+            .sum()
+    }
 
-        let mut total: u32 = 0;
-        for (hour, keys) in &self.keyboard_state {
-            println!("  Hour {}:", hour);
+    /// Left + right + middle clicks.
+    pub fn total_clicks(&self) -> u64 {
+        self.mouse_state.left_click as u64
+            + self.mouse_state.right_click as u64
+            + self.mouse_state.middle_click as u64
+    }
+
+    /// Seconds the session was awake and unlocked, across every hour.
+    pub fn total_active_secs(&self) -> u64 {
+        self.display_state.values().map(|secs| *secs as u64).sum()
+    }
+
+    /// Every key with its total press count, most-pressed first.
+    pub fn keys_ranked(&self) -> Vec<(&str, u32)> {
+        let mut totals: BTreeMap<&str, u32> = BTreeMap::new();
+        for keys in self.keyboard_state.values() {
             for (key, count) in keys {
-                println!("    {}: {}", key, count);
-                total += count;
+                *totals.entry(key.as_str()).or_insert(0) += count;
             }
         }
-        println!("  Total key presses: {}", total);
-
-        println!("  Mouse:");
-        println!("    Left clicks:   {}", self.mouse_state.left_click);
-        println!("    Right clicks:  {}", self.mouse_state.right_click);
-        println!("    Middle clicks: {}", self.mouse_state.middle_click);
-        println!("    Inches moved:  {:.2}", self.mouse_state.mouse_inches);
-        println!("    Scrolls:       {}", self.mouse_state.mouse_scrolls);
-
-        let mut total_active: u32 = 0;
-        for (hour, secs) in &self.display_state {
-            println!("    Hour {} active: {}s", hour, secs);
-            total_active += secs;
-        }
-        let hrs = total_active / 3600;
-        let mins = (total_active % 3600) / 60;
-        let secs = total_active % 60;
-        println!("  Total screen-on time: {}h {}m {}s", hrs, mins, secs);
+        let mut ranked: Vec<(&str, u32)> = totals.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        ranked
     }
 
     /// Merge another state's counts into this one. Pure in-memory arithmetic —

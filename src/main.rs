@@ -1,6 +1,7 @@
 mod cli;
 mod daemon;
 mod ipc;
+mod render;
 
 use crate::daemon::tracker::TrackerState;
 use anyhow::Context;
@@ -28,16 +29,14 @@ async fn main() -> anyhow::Result<()> {
         TrackerCLI::Daemon => {
             daemon::run().await.context("daemon exited with error")?;
         }
-        TrackerCLI::Status => {
+        TrackerCLI::Status { detailed } => {
             let tracker_states = get_status().await?;
             if tracker_states.is_empty() {
                 println!("Nothing tracked since the last push.");
-            }
-            // Oldest date first — anything but today is a day that was tracked
-            // but never pushed.
-            for (date, tracker_state) in &tracker_states {
-                println!("### {date}");
-                tracker_state.display();
+            } else if detailed {
+                render::detailed(&tracker_states);
+            } else {
+                render::brief(&tracker_states);
             }
         }
         TrackerCLI::Init => {

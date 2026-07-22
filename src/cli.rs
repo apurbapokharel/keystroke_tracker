@@ -18,7 +18,11 @@ pub enum TrackerCLI {
     Init,
 
     /// Get current tracker status
-    Status,
+    Status {
+        /// Show a per-hour and per-key breakdown instead of the summary table
+        #[arg(short, long)]
+        detailed: bool,
+    },
 
     /// Push the current session
     Push,
