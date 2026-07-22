@@ -8,6 +8,7 @@ use anyhow::Ok;
 use chrono::Local;
 use clap::Parser;
 use ipc::IPCCommand;
+use std::collections::BTreeMap;
 use std::process::Command;
 use std::{fs, path::Path};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,8 +29,16 @@ async fn main() -> anyhow::Result<()> {
             daemon::run().await.context("daemon exited with error")?;
         }
         TrackerCLI::Status => {
-            let tracker_state = get_status().await?;
-            tracker_state.display();
+            let tracker_states = get_status().await?;
+            if tracker_states.is_empty() {
+                println!("Nothing tracked since the last push.");
+            }
+            // Oldest date first — anything but today is a day that was tracked
+            // but never pushed.
+            for (date, tracker_state) in &tracker_states {
+                println!("### {date}");
+                tracker_state.display();
+            }
         }
         TrackerCLI::Init => {
             println!("Init");
@@ -108,55 +117,37 @@ async fn main() -> anyhow::Result<()> {
             let git_dir_str = read_env_key(GIT_DIR)?;
             let git_dir = home_dir.join(&git_dir_str);
 
-            let date = Local::now().format("%Y-%m-%d").to_string();
             // let user = env::var("USER").unwrap();
             let model = fs::read_to_string("/sys/devices/virtual/dmi/id/product_name")
                 .unwrap_or_else(|_| "Unknown".to_string())
                 .trim()
                 .replace(' ', "_");
-            let git_dir_model = git_dir.join("data").join(date).join(model);
 
             //2. always pull before pushing
             pull_repo(&git_dir).context("pull before push failed")?;
 
-            //3. get Status
-            let tracker_state = get_status().await?;
-
-            //4. read the current json inside git_dir
-            //4.1 if no json then export current state (tracker_state) to json
-            if !git_dir_model.join("keystrokes.json").exists() {
-                tracker_state.export_to_json(&git_dir_model, true)?;
-            }
-            // 4.2 else add the stored state with current state (tracker_state) and export new added json (which is also export_to_json with same file name)
-            else {
-                let stored_state_string = fs::read_to_string(git_dir_model.join("keystrokes.json"))
-                    .context("failed to read keystrokes.json")?;
-                let mut stored_tracker_state: TrackerState =
-                    serde_json::from_str(&stored_state_string)
-                        .context("failed to parse stored keystrokes.json")?;
-                stored_tracker_state.add_jsons(&tracker_state);
-                stored_tracker_state.export_to_json(&git_dir_model, false)?;
+            //3. get Status — one state per date the daemon has not pushed yet,
+            let tracker_states = get_status().await?;
+            if tracker_states.is_empty() {
+                println!("Nothing to push.");
+                return Ok(());
             }
 
-            //5. push
-            let commit_name = Local::now().to_string();
-            let msg = format!("push keystrokes from {}", commit_name);
+            //4. write one keystrokes.json per date, then commit
+            if let Err(e) = write_and_commit(&git_dir, &model, &tracker_states) {
+                restore_repo(&git_dir);
+                return Err(e);
+            }
 
-            Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(&git_dir)
-                .status()?;
-
-            Command::new("git")
-                .args(["commit", "-m", &msg])
-                .current_dir(&git_dir)
-                .status()?;
-
-            Command::new("git")
-                .args(["push", "-u", "origin", "main"])
-                .current_dir(&git_dir)
-                .status()
-                .context("git push failed")?;
+            //5. push. The counts are already committed locally, so a network
+            // failure here is not data loss — the next push carries the commit
+            // along. Reset either way, otherwise the same counts get merged in
+            // a second time.
+            if let Err(e) = run_git(&git_dir, &["push", "-u", "origin", "main"]) {
+                eprintln!(
+                    "git push failed: {e:#}\ncommit is saved locally and will go out on the next push"
+                );
+            }
 
             //6. reset TrackerState after successfull push
             reset_tracker().await.context("unable to reset tracker")?;
@@ -211,7 +202,7 @@ async fn reset_tracker() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get_status() -> anyhow::Result<TrackerState> {
+async fn get_status() -> anyhow::Result<BTreeMap<String, TrackerState>> {
     ensure_daemon_running().await?;
     let socket_path = get_socket()?;
     let stream = UnixStream::connect(socket_path.as_path())
@@ -234,9 +225,86 @@ async fn get_status() -> anyhow::Result<TrackerState> {
         .await
         .context("failed to read response body")?;
 
-    let tracker_state: TrackerState =
+    let tracker_states: BTreeMap<String, TrackerState> =
         serde_json::from_slice(&data_buf).context("decoding tracker state from response")?;
-    Ok(tracker_state)
+    Ok(tracker_states)
+}
+
+/// Merge each date's counts into its own `data/{date}/{model}/keystrokes.json`
+/// and commit them as a single commit.
+fn write_and_commit(
+    git_dir: &Path,
+    model: &str,
+    tracker_states: &BTreeMap<String, TrackerState>,
+) -> anyhow::Result<()> {
+    for (date, tracker_state) in tracker_states {
+        let git_dir_model = git_dir.join("data").join(date).join(model);
+
+        //4. read the current json inside git_dir
+        //4.1 if no json then export current state (tracker_state) to json
+        if !git_dir_model.join("keystrokes.json").exists() {
+            tracker_state.export_to_json(&git_dir_model, true)?;
+        }
+        // 4.2 else add the stored state with current state (tracker_state) and export new added json (which is also export_to_json with same file name)
+        else {
+            let stored_state_string = fs::read_to_string(git_dir_model.join("keystrokes.json"))
+                .with_context(|| format!("failed to read keystrokes.json for {date}"))?;
+            let mut stored_tracker_state: TrackerState = serde_json::from_str(&stored_state_string)
+                .with_context(|| format!("failed to parse stored keystrokes.json for {date}"))?;
+            stored_tracker_state.add_jsons(tracker_state);
+            stored_tracker_state.export_to_json(&git_dir_model, false)?;
+        }
+    }
+
+    let commit_name = Local::now().to_string();
+    let msg = format!("push keystrokes at {}", commit_name);
+
+    run_git(git_dir, &["add", "-A"])?;
+
+    // `git commit` exits non-zero when there is nothing staged,
+    // `git diff --cached --quiet` exits 0 when the index is clean.
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(git_dir)
+        .status()
+        .context("failed to run git diff --cached")?;
+    if !staged.success() {
+        run_git(git_dir, &["commit", "-m", &msg])?;
+    }
+
+    Ok(())
+}
+
+/// A failed commit has to abort before the daemon's counters are cleared.
+/// hence, returning Result
+fn run_git(git_dir: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(git_dir)
+        .status()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !status.success() {
+        anyhow::bail!("git {} failed with {}", args.join(" "), status);
+    }
+    Ok(())
+}
+
+/// Roll the data repo back to the last commit after a failed push.
+///
+/// `restore --staged --worktree` discards edits to tracked files (whether or
+/// not `git add` already staged them) and `clean -fd` drops the folders a brand
+/// new date created. HEAD is left alone, so an earlier successful commit is
+/// never undone. Best-effort: a failure here is reported but must not mask the
+/// original push error.
+fn restore_repo(git_dir: &Path) {
+    for args in [
+        &["restore", "--staged", "--worktree", "--", "."][..],
+        &["clean", "-fd"][..],
+    ] {
+        if let Err(e) = run_git(git_dir, args) {
+            eprintln!("push rollback failed: {e:#}");
+        }
+    }
 }
 
 fn pull_repo(git_dir: &Path) -> anyhow::Result<()> {

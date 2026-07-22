@@ -7,16 +7,21 @@ use std::sync::Mutex;
 
 pub const CURRENT_VERSION: u8 = 2;
 
+pub const DATE_FMT: &str = "%Y-%m-%d";
+
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct Tracker {
     // NOTE: i use a mutex here in the sturct rather than making the struct instanct a mutex.
     // I do this as per the recommendtaion in https://tokio.rs/tokio/tutorial/shared-state
     // TBH these tiny nuances are why I honestly feel you learn more by doing but doing is not
     // always easy, specially when it comes to rust.
-    pub data: Mutex<TrackerState>,
+    /// One `TrackerState` per calendar date, so a day that was never pushed
+    /// keeps its own counters instead of folding into the next day's. One mutex
+    /// guards the whole map: 
+    pub data: Mutex<BTreeMap<String, TrackerState>>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrackerState {
     /// adding a version for backward compatibility and autoschema parrsing on the frontend
     #[serde(default)]
@@ -60,7 +65,7 @@ pub struct MouseState {
 impl Tracker {
     pub fn new() -> Tracker {
         Tracker {
-            data: Mutex::new(TrackerState::new()),
+            data: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -70,15 +75,17 @@ impl Tracker {
     /// guard — the counters themselves are still coherent. For a long-running
     /// daemon it is better to keep tracking than to let one thread's panic
     /// cascade into every other thread via `.expect()`.
-    pub fn state(&self) -> std::sync::MutexGuard<'_, TrackerState> {
+    pub fn state(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, TrackerState>> {
         self.data
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
-impl TrackerState {
-    fn new() -> TrackerState {
+/// AI: Hand-written rather than derived so a bucket created by `or_default()`
+/// carries `CURRENT_VERSION`.
+impl Default for TrackerState {
+    fn default() -> TrackerState {
         TrackerState {
             version: CURRENT_VERSION,
             keyboard_state: BTreeMap::new(),
@@ -86,13 +93,9 @@ impl TrackerState {
             display_state: BTreeMap::new(),
         }
     }
+}
 
-    pub fn reset(&mut self) {
-        self.keyboard_state = BTreeMap::new();
-        self.mouse_state = MouseState::default();
-        self.display_state = BTreeMap::new();
-    }
-
+impl TrackerState {
     pub fn display(&self) {
         println!("=== Tracker State (version {}) ===", self.version);
 

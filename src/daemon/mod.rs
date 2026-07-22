@@ -18,7 +18,7 @@ use tokio::net::{UnixListener, UnixStream};
 use zbus::Connection;
 
 use crate::cli::ReconfigureTarget;
-use crate::daemon::tracker::Tracker;
+use crate::daemon::tracker::{DATE_FMT, Tracker};
 use crate::daemon::zzbus::*;
 use crate::ipc::IPCCommand;
 
@@ -106,12 +106,16 @@ pub async fn run() -> anyhow::Result<()> {
             };
             for event in events {
                 if let EventSummary::Key(_ev, key_type, 1) = event.destructure() {
-                    let hour_indicator = Local::now().hour() as u8;
+                    let now = Local::now();
+                    let date = now.format(DATE_FMT).to_string();
+                    let hour_indicator = now.hour() as u8;
                     let key_code = format!("{:?}", KeyCode::new(key_type.code()));
 
                     let mut tracker_state = tracker_write.state();
 
                     *tracker_state
+                        .entry(date)
+                        .or_default()
                         .keyboard_state
                         .entry(hour_indicator)
                         .or_default()
@@ -152,11 +156,13 @@ pub async fn run() -> anyhow::Result<()> {
             for event in events {
                 match event.destructure() {
                     EventSummary::Key(_ev, key_type, 1) => {
+                        let date = Local::now().format(DATE_FMT).to_string();
                         let mut tracker_state = tracker_write_2.state();
+                        let today = tracker_state.entry(date).or_default();
                         match key_type {
-                            KeyCode::BTN_RIGHT => tracker_state.mouse_state.right_click += 1,
-                            KeyCode::BTN_LEFT => tracker_state.mouse_state.left_click += 1,
-                            KeyCode::BTN_MIDDLE => tracker_state.mouse_state.middle_click += 1,
+                            KeyCode::BTN_RIGHT => today.mouse_state.right_click += 1,
+                            KeyCode::BTN_LEFT => today.mouse_state.left_click += 1,
+                            KeyCode::BTN_MIDDLE => today.mouse_state.middle_click += 1,
                             _ => {}
                         }
                     }
@@ -164,14 +170,26 @@ pub async fn run() -> anyhow::Result<()> {
                     EventSummary::RelativeAxis(_ev, RelativeAxisCode::REL_X, value) => dx += value,
                     EventSummary::RelativeAxis(_ev, RelativeAxisCode::REL_Y, value) => dy += value,
                     EventSummary::RelativeAxis(_ev, RelativeAxisCode::REL_WHEEL_HI_RES, _) => {
-                        tracker_write_2.state().mouse_state.mouse_scrolls += 1;
+                        let date = Local::now().format(DATE_FMT).to_string();
+                        tracker_write_2
+                            .state()
+                            .entry(date)
+                            .or_default()
+                            .mouse_state
+                            .mouse_scrolls += 1;
                     }
                     // Report boundary: commit one Euclidean segment (in inches
                     // of physical desk travel = raw counts / DPI).
                     EventSummary::Synchronization(_ev, SynchronizationCode::SYN_REPORT, _) => {
                         if dx != 0 || dy != 0 {
                             let inches = (dx as f64).hypot(dy as f64) / mouse_dpi;
-                            tracker_write_2.state().mouse_state.mouse_inches += inches;
+                            let date = Local::now().format(DATE_FMT).to_string();
+                            tracker_write_2
+                                .state()
+                                .entry(date)
+                                .or_default()
+                                .mouse_state
+                                .mouse_inches += inches;
                             dx = 0;
                             dy = 0;
                         }
@@ -245,10 +263,14 @@ pub async fn run() -> anyhow::Result<()> {
             let locked = is_locked_clone_2.load(Ordering::Relaxed);
             let asleep = is_asleep_clone_2.load(Ordering::Relaxed);
             if !locked && !asleep {
-                let hour_indicator = Local::now().hour() as u8;
+                let now = Local::now();
+                let date = now.format(DATE_FMT).to_string();
+                let hour_indicator = now.hour() as u8;
                 let mut tracker_state = tracker_write_clone.state();
 
                 *tracker_state
+                    .entry(date)
+                    .or_default()
                     .display_state
                     .entry(hour_indicator)
                     .or_insert(0) += 3;
@@ -472,8 +494,8 @@ async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Re
         "Read" => {
             // Scope the lock so the guard is dropped before the .await writes.
             let serialized = {
-                let state = tracker.state().clone();
-                serde_json::to_string(&state).context("serializing tracker state")?
+                let states = tracker.state().clone();
+                serde_json::to_string(&states).context("serializing tracker state")?
             };
             writer
                 .write_all(&(serialized.len() as u32).to_le_bytes())
@@ -486,7 +508,7 @@ async fn handle_request(tracker: Arc<Tracker>, stream: UnixStream) -> anyhow::Re
             writer.flush().await.context("flushing response")?;
         }
         "Reset" => {
-            tracker.state().reset();
+            tracker.state().clear();
         }
         other => bail!("unknown command {other:?}"),
     }
