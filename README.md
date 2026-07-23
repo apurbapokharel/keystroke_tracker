@@ -173,6 +173,11 @@ Notifications are best-effort: if no session bus or notification daemon is
 available, the failure is still recorded in the journal
 (`journalctl --user -u tracker.service`).
 
+## Article
+
+A deeper dive into the motivation and design of this project:
+[Thinking about migrating to Corne? Maybe you should](https://medium.com/@apurbapokharel/thinking-about-migrating-to-corne-maybe-you-should-1173afd3c4f7).
+
 ## License
 
 MIT
