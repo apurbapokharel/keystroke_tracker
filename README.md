@@ -2,10 +2,11 @@
 
 A lightweight input-activity tracker daemon for Linux.
 
-Reads directly from `/dev/input/event*` and aggregates, per hour:
+Reads directly from `/dev/input/event*` and aggregates,
+- Per hour **Keystrokes**; per-key press counts
+- Per day **Mouse** — left / right / middle click counts, scrolls, and pointer travel (inches)
 
-- **Keystrokes** — per-key press counts
-- **Mouse** — left / right / middle click counts, scrolls, and pointer travel (inches)
+Uses Hyperland socket or Dbus signal and aggregates,
 - **Active screen time** — seconds the session was awake and unlocked
 
 Data is stored locally as versioned JSON and can optionally be synced to a
@@ -51,13 +52,12 @@ D-Bus signal on every desktop.
 - Rust (https://rustup.rs)
 - Git installed and configured to be able to clone, pull, push.
 - evtest (`sudo pacman -S evtest` or `sudo apt install evtest`)
-- systemd (user services)
-- User must be in the `input` group
+- systemd (user services, should be preinstalled for most linux OS)
 
 ## Install
 
 ```bash
-git clone https://github.com/your-username/tracker.git
+git clone https://github.com/apurbapokharel/keystroke_tracker.git
 cd tracker
 ./install.sh
 ```
@@ -99,7 +99,7 @@ tracker reconfigure        — re-run device setup, then restart the service
 `status` reports **live daemon state only** — one row per date that has not been
 pushed yet, oldest first. Anything above today is a day that was tracked but
 never pushed. History that has already been pushed lives in the data repo and is
-what the dashboard reads.
+what the UI shown above reads.
 
 ```
 DATE          KEYS  CLICKS   INCHES  SCROLLS   ACTIVE
