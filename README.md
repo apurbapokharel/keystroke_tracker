@@ -11,6 +11,15 @@ Reads directly from `/dev/input/event*` and aggregates, per hour:
 Data is stored locally as versioned JSON and can optionally be synced to a
 GitHub repository.
 
+![CLI Demo](assets/demo.gif)
+
+### Web UI
+
+An interactive heatmap dashboard is available at
+[keystroke_ui](https://github.com/apurbapokharel/keystroke_ui):
+
+<video src="assets/ui.mp4" controls width="720"></video>
+
 ### Privacy
 
 Only *counts* are stored — no raw key sequences, no timing between keys, no
