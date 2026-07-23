@@ -18,7 +18,7 @@ GitHub repository.
 An interactive heatmap dashboard is available at
 [keystroke_ui](https://github.com/apurbapokharel/keystroke_ui):
 
-<video src="assets/ui.mp4" controls width="720"></video>
+https://github.com/user-attachments/assets/0720e059-930f-40d1-be4f-640d7ebd97b4
 
 ### Privacy
 
